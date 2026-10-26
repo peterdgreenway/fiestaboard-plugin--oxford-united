@@ -1,0 +1,173 @@
+{
+  "id": "oxford_united",
+  "name": "Oxford United",
+  "version": "1.1.1",
+  "description": "English League One standings, last result (HT/FT + scorers) and next fixture for Oxford United. Save plugin settings on Integrations to force-refresh scores.",
+  "author": "Community",
+  "icon": "trophy",
+  "category": "data",
+  "repository": "https://github.com/yourusername/fiestaboard-plugin--oxford-united",
+  "teaser": "OXF 1-0  HT 0-0",
+  "previews": [
+    {
+      "device_type": "flagship",
+      "rows": [
+        "   OXFORD UNITED    ",
+        "OXF  8th  18pts     ",
+        "OXF 1-0 BRA         ",
+        "HT 0-0  FT 1-0      ",
+        "Cheek 67'           ",
+        "Form WWDLW          "
+      ]
+    },
+    {
+      "device_type": "note",
+      "rows": [
+        "OXFORD UNITED",
+        "1-0 vs BRA",
+        "Cheek 67'"
+      ]
+    }
+  ],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": {
+        "type": "string",
+        "title": "TheSportsDB API Key (optional)",
+        "description": "Free key '123' works. Premium key gives higher limits.",
+        "default": "123",
+        "ui:widget": "password"
+      },
+      "refresh_seconds": {
+        "type": "integer",
+        "title": "Refresh Interval (seconds)",
+        "description": "How often to refresh data automatically (minimum 120). To update immediately: open Integrations \u2192 Oxford United \u2192 Save Changes (clears cache and re-fetches scores).",
+        "default": 300,
+        "minimum": 120,
+        "maximum": 3600
+      },
+      "show_form": {
+        "type": "boolean",
+        "title": "Show recent form",
+        "description": "Include last 5 results form string (e.g. WWDLW)",
+        "default": true
+      },
+      "max_scorers": {
+        "type": "integer",
+        "title": "Max scorers in summary line",
+        "description": "How many scorers to show in formatted_scorers (1-6)",
+        "default": 4,
+        "minimum": 1,
+        "maximum": 6
+      }
+    }
+  },
+  "variables": {
+    "simple": [
+      "team",
+      "position",
+      "points",
+      "played",
+      "won",
+      "drawn",
+      "lost",
+      "gf",
+      "ga",
+      "gd",
+      "form",
+      "last_home",
+      "last_away",
+      "last_date",
+      "last_status",
+      "last_result",
+      "ht_home",
+      "ht_away",
+      "ht_score",
+      "ft_home",
+      "ft_away",
+      "ft_score",
+      "last_score",
+      "scorers",
+      "scorer_count",
+      "scorer_1",
+      "scorer_2",
+      "scorer_3",
+      "scorer_4",
+      "formatted_table",
+      "formatted_last",
+      "formatted_htft",
+      "formatted_scorers",
+      "formatted_next",
+      "next_home",
+      "next_away",
+      "next_date",
+      "next_time",
+      "next_opponent",
+      "last_updated"
+    ],
+    "arrays": {
+      "goals": {
+        "label_field": "formatted",
+        "item_fields": [
+          "minute",
+          "player",
+          "player_full",
+          "team",
+          "is_home",
+          "is_own",
+          "formatted"
+        ]
+      }
+    }
+  },
+  "max_lengths": {
+    "team": 15,
+    "position": 2,
+    "points": 3,
+    "played": 2,
+    "won": 2,
+    "drawn": 2,
+    "lost": 2,
+    "gf": 3,
+    "ga": 3,
+    "gd": 4,
+    "form": 5,
+    "last_home": 12,
+    "last_away": 12,
+    "last_date": 10,
+    "last_status": 5,
+    "last_result": 1,
+    "ht_home": 2,
+    "ht_away": 2,
+    "ht_score": 5,
+    "ft_home": 2,
+    "ft_away": 2,
+    "ft_score": 5,
+    "last_score": 5,
+    "scorers": 22,
+    "scorer_count": 2,
+    "scorer_1": 22,
+    "scorer_2": 22,
+    "scorer_3": 22,
+    "scorer_4": 22,
+    "formatted_table": 22,
+    "formatted_last": 22,
+    "formatted_htft": 22,
+    "formatted_scorers": 22,
+    "formatted_next": 22,
+    "next_home": 12,
+    "next_away": 12,
+    "next_date": 10,
+    "next_time": 5,
+    "next_opponent": 12,
+    "last_updated": 20,
+    "goals.*.minute": 3,
+    "goals.*.player": 12,
+    "goals.*.player_full": 20,
+    "goals.*.team": 6,
+    "goals.*.is_home": 1,
+    "goals.*.is_own": 1,
+    "goals.*.formatted": 18
+  }
+}
