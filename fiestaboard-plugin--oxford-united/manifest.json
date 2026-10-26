@@ -6,26 +6,26 @@
   "author": "Community",
   "icon": "trophy",
   "category": "data",
-  "repository": "https://github.com/yourusername/fiestaboard-plugin--oxford-united",
-  "teaser": "OXF 1-0  HT 0-0",
+  "repository": "https://github.com/peterdgreenway/fiestaboard-plugin--oxford-united",
+  "teaser": "OXF 1-0 HT 0-0 ",
   "previews": [
     {
       "device_type": "flagship",
       "rows": [
-        "   OXFORD UNITED    ",
-        "OXF  8th  18pts     ",
-        "OXF 1-0 BRA         ",
-        "HT 0-0  FT 1-0      ",
-        "Cheek 67'           ",
-        "Form WWDLW          "
+        "   OXFORD UNITED      ",
+        "OXF  8th  18pts       ",
+        "OXF 1-0 BRA           ",
+        "HT 0-0  FT 1-0        ",
+        "Cheek 67'             ",
+        "Form WWDLW            "
       ]
     },
     {
       "device_type": "note",
       "rows": [
-        "OXFORD UNITED",
-        "1-0 vs BRA",
-        "Cheek 67'"
+        "OXFORD UNITED  ",
+        "1-0 vs BRA     ",
+        "Cheek 67'      "
       ]
     }
   ],
@@ -169,5 +169,14 @@
     "goals.*.is_home": 1,
     "goals.*.is_own": 1,
     "goals.*.formatted": 18
-  }
+  },
+  "env_vars": [
+    {
+      "name": "OXFORD_UNITED_API_KEY",
+      "description": "Optional TheSportsDB API key (overrides Integrations setting)",
+      "required": false
+    }
+  ],
+  "documentation": "docs/SETUP.md",
+  "min_refresh_seconds": 120
 }

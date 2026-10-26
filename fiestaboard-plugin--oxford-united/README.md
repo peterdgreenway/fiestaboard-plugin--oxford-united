@@ -6,6 +6,43 @@ Shows league table position, **last match with half-time & full-time scores**, *
 
 Data source: free [TheSportsDB](https://www.thesportsdb.com/) API (same as the official Sports Scores plugin).
 
+
+## Install from Git
+
+Repository name follows the FiestaBoard registry convention:
+
+```
+fiestaboard-plugin--oxford-united
+```
+
+Plugin id: `oxford_united` (hyphens → underscores).
+
+### From a public GitHub URL
+
+```bash
+curl -X POST http://localhost:4420/api/plugins/install \
+  -H "Content-Type: application/json" \
+  -d '{"repository": "https://github.com/YOUR_USER/fiestaboard-plugin--oxford-united"}'
+```
+
+Only HTTPS URLs are accepted. After install, open **Integrations**, enable **Oxford United**, and click **Save Changes**.
+
+### Local development
+
+Plugin files live at the **repository root** (not nested under `plugins/`):
+
+```
+fiestaboard-plugin--oxford-united/
+├── __init__.py
+├── manifest.json
+├── README.md
+├── LICENSE
+├── docs/SETUP.md
+└── tests/
+```
+
+Copy or bind-mount into FiestaBoard's `external_plugins/oxford_united/` and restart.
+
 ## Features
 
 - Current League One position, points, W/D/L, GD, form
