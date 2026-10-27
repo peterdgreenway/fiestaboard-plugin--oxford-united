@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Oxford United live scores with green/red status, scorers as forename initial surname + minute. Idle shows next fixture.",
   "author": "peterdgreenway",
   "icon": "trophy",
@@ -143,7 +143,9 @@
       "idle_match_block",
       "status_colour",
       "status_color",
-      "status_colour_name"
+      "status_colour_name",
+      "game_status_indicator",
+      "game_status_indicator_name"
     ],
     "arrays": {
       "goals": {
@@ -240,7 +242,9 @@
     "idle_match_block": 50,
     "status_colour": 4,
     "status_color": 4,
-    "status_colour_name": 5
+    "status_colour_name": 5,
+    "game_status_indicator": 4,
+    "game_status_indicator_name": 6
   },
   "env_vars": [
     {

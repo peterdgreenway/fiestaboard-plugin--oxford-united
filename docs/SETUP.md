@@ -152,3 +152,16 @@ Example:
 | `live_summary` | `OXF 1-0 BRA 67'` |
 | `current_minute` | `67'` |
 | `last_score` / `ft_score` | current score |
+
+
+## Game Status Indicator
+
+| State | Colour | Code |
+|-------|--------|------|
+| Match in progress | **Green** | `{66}` |
+| No game in progress | **Yellow** | `{65}` |
+
+```
+{{oxford_united.game_status_indicator}}
+{{oxford_united.status_colour}}
+```

@@ -550,10 +550,12 @@ class OxfordUnitedPlugin(PluginBase):
             "current_minute": self._event_minute(live_event) if in_progress else "",
             "run_refresh_now": "YES" if force_refresh else "NO",
             "refresh_seconds": str(int(self.config.get("refresh_seconds", 120) or 120)),
-            # Vestaboard colour tiles: green = live, red = no game
-            "status_colour": "{66}" if in_progress else "{63}",
-            "status_color": "{66}" if in_progress else "{63}",
-            "status_colour_name": "green" if in_progress else "red",
+            # Game Status Indicator: green = live, yellow = no game
+            "status_colour": "{66}" if in_progress else "{65}",
+            "status_color": "{66}" if in_progress else "{65}",
+            "status_colour_name": "green" if in_progress else "yellow",
+            "game_status_indicator": "{66}" if in_progress else "{65}",
+            "game_status_indicator_name": "green" if in_progress else "yellow",
             "position": "",
             "points": "",
             "played": "",
@@ -835,8 +837,7 @@ class OxfordUnitedPlugin(PluginBase):
             except ValueError:
                 date_disp = date[:9]
 
-            r1 = ("{63} No game").ljust(14)[:20]  # red tile + text
-            r1 = "{63} No game"  # 1 tile + 8 chars = 9 tiles
+            r1 = "{65} No game"  # Game Status Indicator yellow + text
             if ha and opp_short:
                 r2 = f"NEXT {ha} {opp_short}".strip()[:15].ljust(15)
             elif data.get("formatted_next"):
