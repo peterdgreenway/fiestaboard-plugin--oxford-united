@@ -125,3 +125,30 @@ BOLTON
 ```
 
 Also: `next_match_line`, `next_home_away` (HOME/AWAY), `next_ha` (H/A), `next_date`, `next_time`
+
+
+## Live score + minute block
+
+When `match_in_progress` is YES:
+
+```
+{{oxford_united.live_row1}}
+{{oxford_united.live_row2}}
+{{oxford_united.live_row3}}
+```
+
+Example:
+
+```
+     LIVE
+ OXF 1-0 BRA
+      67'
+```
+
+| Variable | Example |
+|----------|---------|
+| `live_match_block` | full 3-line block |
+| `live_score_minute` | `1-0 67'` |
+| `live_summary` | `OXF 1-0 BRA 67'` |
+| `current_minute` | `67'` |
+| `last_score` / `ft_score` | current score |

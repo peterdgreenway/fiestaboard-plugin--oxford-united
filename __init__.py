@@ -535,21 +535,58 @@ class OxfordUnitedPlugin(PluginBase):
                 for g in goals
             ]
 
-        # ---- Live match extras ----
+        # ---- Live match extras + score/minute block ----
         if in_progress and last:
             data["live_status"] = (last.get("strStatus") or last.get("strProgress") or "LIVE")[:20]
-            # During live, last_* / ft_* hold current score; ht_* from timeline
-            if data.get("current_minute"):
-                data["formatted_minute"] = f"MIN {data['current_minute']}"[:15]
+            minute = data.get("current_minute") or ""
+            if minute:
+                data["formatted_minute"] = f"MIN {minute}"[:15]
             else:
                 data["formatted_minute"] = "LIVE"[:15]
-            data["formatted_live"] = (
-                f"{data.get('last_score', '')} {data.get('current_minute', '')}".strip()
-            )[:22]
+                minute = "LIVE"
+
+            score = (data.get("last_score") or data.get("ft_score") or "").strip()
+            # Prefer explicit current score from event if empty
+            if not score:
+                hs = last.get("intHomeScore")
+                as_ = last.get("intAwayScore")
+                if hs is not None and as_ is not None:
+                    score = f"{hs}-{as_}"
+                    data["last_score"] = score
+                    data["ft_score"] = score
+
+            home_ab = data.get("last_home") or self._abbr(last.get("strHomeTeam", ""), 6)
+            away_ab = data.get("last_away") or self._abbr(last.get("strAwayTeam", ""), 6)
+
+            data["formatted_live"] = f"{score} {minute}".strip()[:22]
+
+            # Dedicated live summary block (Note-friendly 15×3)
+            # Row1: LIVE           Row2: OXF 1-0 BRA    Row3: 67'
+            r1 = "LIVE".center(15)[:15]
+            if score:
+                r2 = f"{home_ab} {score} {away_ab}".strip()
+                r2 = r2[:15].center(15)[:15] if len(r2) < 15 else r2[:15]
+            else:
+                r2 = f"{home_ab} v {away_ab}"[:15].ljust(15)
+            r3 = str(minute)[:15].center(15)[:15]
+            data["live_row1"] = r1.ljust(15)[:15]
+            data["live_row2"] = r2.ljust(15)[:15]
+            data["live_row3"] = r3.ljust(15)[:15]
+            data["live_match_block"] = f"{data['live_row1']}\n{data['live_row2']}\n{data['live_row3']}"
+            # Single-line summary: "1-0 67'" or "OXF 1-0 BRA 67'"
+            line = f"{score} {minute}".strip()
+            data["live_score_minute"] = line[:22]
+            data["live_summary"] = f"{home_ab} {score} {away_ab} {minute}".strip()[:45]
         else:
             data["live_status"] = ""
             data["formatted_minute"] = ""
             data["formatted_live"] = ""
+            data["live_row1"] = ""
+            data["live_row2"] = ""
+            data["live_row3"] = ""
+            data["live_match_block"] = ""
+            data["live_score_minute"] = ""
+            data["live_summary"] = ""
 
         # ---- Next fixture (+ Note block when not live) ----
         if nxt:
@@ -609,13 +646,74 @@ class OxfordUnitedPlugin(PluginBase):
             data["next_match_block"] = ""
             data["next_match_line"] = ""
 
-        # Primary board block: live scores vs next match
+        # Primary board block: live scores vs idle + next fixture
         if in_progress:
-            data["match_block"] = data.get("formatted_live") or data.get("formatted_last") or ""
+            data["match_block"] = (
+                data.get("live_score_minute")
+                or data.get("formatted_live")
+                or data.get("formatted_last")
+                or ""
+            )
             data["display_mode"] = "LIVE"
+            data["no_game_message"] = ""
+            data["status_message"] = data["match_block"]
+            data["idle_row1"] = ""
+            data["idle_row2"] = ""
+            data["idle_row3"] = ""
+            data["idle_match_block"] = ""
         else:
-            data["match_block"] = data.get("next_match_line") or data.get("formatted_next") or ""
-            data["display_mode"] = "NEXT"
+            idle = "No game at the moment"
+            data["no_game_message"] = idle
+            data["display_mode"] = "IDLE"
+
+            # Keep next fixture fields from above; build combined Note 15×3:
+            # Row1: No game now (abbrev)  Row2: NEXT H OPP  Row3: date time
+            ha = data.get("next_ha") or ""
+            opp = data.get("next_opponent") or data.get("next_opponent_full") or ""
+            opp_short = self._truncate(str(opp).upper(), 10)
+            date = data.get("next_date") or ""
+            time_str = data.get("next_time") or ""
+            date_disp = date
+            try:
+                if date and len(date) >= 10:
+                    dt = datetime.strptime(date[:10], "%Y-%m-%d")
+                    date_disp = dt.strftime("%d %b").upper()
+            except ValueError:
+                date_disp = date[:9]
+
+            r1 = "No game now".ljust(15)[:15]
+            if ha and opp_short:
+                r2 = f"NEXT {ha} {opp_short}".strip()[:15].ljust(15)
+            elif data.get("formatted_next"):
+                r2 = str(data["formatted_next"])[:15].ljust(15)
+            else:
+                r2 = "NEXT TBA".ljust(15)[:15]
+            when = f"{date_disp} {time_str}".strip()[:15]
+            r3 = when.ljust(15)[:15] if when else "".ljust(15)
+
+            data["idle_row1"] = r1
+            data["idle_row2"] = r2
+            data["idle_row3"] = r3
+            data["idle_match_block"] = f"{r1}\n{r2}\n{r3}"
+
+            # next_* rows mirror idle combined block
+            data["next_row1"] = r1
+            data["next_row2"] = r2
+            data["next_row3"] = r3
+            data["next_match_block"] = data["idle_match_block"]
+
+            # One-line status: message + next details
+            if ha and opp_short:
+                detail = f"Next: {ha} {opp_short} {when}".strip()
+                data["status_message"] = self._truncate(f"{idle}. {detail}", 60)
+                data["match_block"] = data["status_message"][:45]
+            else:
+                data["status_message"] = idle
+                data["match_block"] = idle
+
+            data["next_match_line"] = self._truncate(
+                f"NEXT {ha} {opp_short} {when}".strip(), 45
+            ) if (ha or opp_short or when) else data.get("next_match_line", "")
 
         return data
 

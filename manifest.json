@@ -1,20 +1,20 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "description": "Oxford United: live match (minute, HT/FT, scorers) with refresh every n seconds (default 120) and Run refresh now. When idle, next opponent H/A date/time block.",
   "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
   "repository": "https://github.com/peterdgreenway/fiestaboard-plugin--oxford-united",
-  "teaser": "LIVE 1-0 67'   ",
+  "teaser": "1-0 67'        ",
   "previews": [
     {
       "device_type": "note",
       "rows": [
-        "LIVE 1-0 67'   ",
-        "OXF vs BRA     ",
-        "Cheek 67'      "
+        "     LIVE      ",
+        " OXF 1-0 BRA   ",
+        "      67'      "
       ]
     },
     {
@@ -128,7 +128,19 @@
       "next_match_block",
       "next_match_line",
       "run_refresh_now",
-      "refresh_seconds"
+      "refresh_seconds",
+      "live_row1",
+      "live_row2",
+      "live_row3",
+      "live_match_block",
+      "live_score_minute",
+      "live_summary",
+      "no_game_message",
+      "status_message",
+      "idle_row1",
+      "idle_row2",
+      "idle_row3",
+      "idle_match_block"
     ],
     "arrays": {
       "goals": {
@@ -210,7 +222,19 @@
     "next_match_block": 50,
     "next_match_line": 45,
     "run_refresh_now": 3,
-    "refresh_seconds": 6
+    "refresh_seconds": 6,
+    "live_row1": 15,
+    "live_row2": 15,
+    "live_row3": 15,
+    "live_match_block": 50,
+    "live_score_minute": 22,
+    "live_summary": 45,
+    "no_game_message": 30,
+    "status_message": 45,
+    "idle_row1": 15,
+    "idle_row2": 15,
+    "idle_row3": 15,
+    "idle_match_block": 50
   },
   "env_vars": [
     {
