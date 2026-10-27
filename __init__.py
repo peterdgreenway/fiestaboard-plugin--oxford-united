@@ -1,7 +1,11 @@
 """Oxford United (English League One) plugin for FiestaBoard.
 
-Fetches standings, last result (HT/FT + scorers) and next fixture
-for Oxford United from TheSportsDB free API.
+Fetches standings, live/in-progress match (minute, HT/FT, scorers),
+and next fixture for Oxford United from TheSportsDB.
+
+When a match is live, refresh_seconds (default 120) controls polling.
+Use run_refresh_now + Save for an immediate update.
+When no match is in progress, exposes a Note-friendly next-opponent block.
 """
 
 from __future__ import annotations
@@ -38,21 +42,23 @@ class OxfordUnitedPlugin(PluginBase):
 
     def validate_config(self, config: Dict[str, Any]) -> List[str]:
         errors: List[str] = []
-        refresh = config.get("refresh_seconds", 300)
-        if not isinstance(refresh, int) or refresh < 120:
-            errors.append("refresh_seconds must be an integer >= 120")
+        refresh = config.get("refresh_seconds", 120)
+        if not isinstance(refresh, int) or refresh < 60:
+            errors.append("refresh_seconds must be an integer >= 60 (default 120 while live)")
+        if "run_refresh_now" in config and not isinstance(config["run_refresh_now"], bool):
+            errors.append("run_refresh_now must be a boolean")
+        max_scorers = config.get("max_scorers", 4)
+        if max_scorers is not None and (
+            not isinstance(max_scorers, int) or max_scorers < 1 or max_scorers > 8
+        ):
+            errors.append("max_scorers must be an integer 1-8")
         return errors
 
     def on_config_change(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
-        """Clear cached data whenever settings are saved in the web UI.
-
-        FiestaBoard plugins cannot add custom dashboard buttons. Saving the
-        plugin settings on the Integrations page is the supported way to force
-        an immediate re-fetch of scores (HT/FT, scorers, table).
-        """
+        """Clear cache on Save — enables Run refresh now for live scores/scorers."""
         try:
             self.clear_cache()
-            logger.info("Oxford United: cache cleared after config change (manual refresh)")
+            logger.info("Oxford United: cache cleared (refresh now / settings save)")
         except Exception as e:
             logger.warning("Oxford United: clear_cache failed: %s", e)
 
@@ -64,24 +70,35 @@ class OxfordUnitedPlugin(PluginBase):
         )
         show_form = self.config.get("show_form", True)
         max_scorers = int(self.config.get("max_scorers", 4))
+        force = bool(self.config.get("run_refresh_now", False))
 
         try:
             standing = self._fetch_standing(api_key)
             last = self._fetch_last_result(api_key)
             nxt = self._fetch_next_fixture(api_key)
+            live = self._find_live_event(api_key, last, nxt)
 
+            # Prefer live event for scores/scorers/minute
+            match_event = live or last
             timeline: List[Dict] = []
-            if last and last.get("idEvent"):
-                timeline = self._fetch_timeline(api_key, str(last["idEvent"]))
+            if match_event and match_event.get("idEvent"):
+                timeline = self._fetch_timeline(api_key, str(match_event["idEvent"]))
 
-            if not standing and not last and not nxt:
+            if not standing and not match_event and not nxt:
                 return PluginResult(
                     available=False,
                     error="No data returned from TheSportsDB",
                 )
 
             data = self._build_data(
-                standing, last, nxt, timeline, show_form, max_scorers
+                standing,
+                match_event,
+                nxt,
+                timeline,
+                show_form,
+                max_scorers,
+                live_event=live,
+                force_refresh=force,
             )
             return PluginResult(available=True, data=data)
 
@@ -131,6 +148,71 @@ class OxfordUnitedPlugin(PluginBase):
         except Exception as e:
             logger.warning("Could not fetch timeline for event %s: %s", event_id, e)
             return []
+
+    def _status_is_live(self, event: Optional[Dict]) -> bool:
+        if not event:
+            return False
+        status = (event.get("strStatus") or event.get("strProgress") or "").lower()
+        if any(
+            x in status
+            for x in (
+                "not started",
+                "ns",
+                "finish",
+                "ft",
+                "aet",
+                "pen",
+                "postpon",
+                "cancel",
+                "abandoned",
+            )
+        ):
+            # Finished / not started — unless progress shows a minute
+            if "finish" in status or status in ("ft", "aet", "pen") or "not started" in status:
+                return False
+        if any(
+            x in status
+            for x in ("progress", "1h", "2h", "ht", "half", "live", "1st", "2nd")
+        ):
+            return True
+        # strProgress often "67'" during live
+        progress = (event.get("strProgress") or "").strip()
+        if progress.endswith("'") or progress.isdigit():
+            return True
+        return False
+
+    def _event_minute(self, event: Optional[Dict]) -> str:
+        if not event:
+            return ""
+        progress = (event.get("strProgress") or "").strip()
+        if progress:
+            # Normalise 67' / 45+2 / HT
+            return progress.replace(" ", "")[:8]
+        status = (event.get("strStatus") or "").upper()
+        if "HT" in status or "HALF" in status:
+            return "HT"
+        return ""
+
+    def _find_live_event(
+        self,
+        api_key: str,
+        last: Optional[Dict],
+        nxt: Optional[Dict],
+    ) -> Optional[Dict]:
+        """Return the in-progress Oxford match if any (from last/next payloads)."""
+        for ev in (last, nxt):
+            if ev and self._status_is_live(ev):
+                return ev
+        return None
+
+    def _truncate(self, text: str, max_len: int) -> str:
+        text = (text or "").strip()
+        if len(text) <= max_len:
+            return text
+        cut = text[: max_len + 1]
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        return cut[:max_len].strip()
 
     # ------------------------------------------------------------------
     # Goal / HT helpers
@@ -308,11 +390,19 @@ class OxfordUnitedPlugin(PluginBase):
         timeline: List[Dict],
         show_form: bool,
         max_scorers: int,
+        live_event: Optional[Dict] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        in_progress = live_event is not None
 
         data: Dict[str, Any] = {
             "team": TEAM_SHORT,
+            "match_in_progress": "YES" if in_progress else "NO",
+            "is_live": "YES" if in_progress else "NO",
+            "current_minute": self._event_minute(live_event) if in_progress else "",
+            "run_refresh_now": "YES" if force_refresh else "NO",
+            "refresh_seconds": str(int(self.config.get("refresh_seconds", 120) or 120)),
             "position": "",
             "points": "",
             "played": "",
@@ -445,7 +535,23 @@ class OxfordUnitedPlugin(PluginBase):
                 for g in goals
             ]
 
-        # ---- Next fixture ----
+        # ---- Live match extras ----
+        if in_progress and last:
+            data["live_status"] = (last.get("strStatus") or last.get("strProgress") or "LIVE")[:20]
+            # During live, last_* / ft_* hold current score; ht_* from timeline
+            if data.get("current_minute"):
+                data["formatted_minute"] = f"MIN {data['current_minute']}"[:15]
+            else:
+                data["formatted_minute"] = "LIVE"[:15]
+            data["formatted_live"] = (
+                f"{data.get('last_score', '')} {data.get('current_minute', '')}".strip()
+            )[:22]
+        else:
+            data["live_status"] = ""
+            data["formatted_minute"] = ""
+            data["formatted_live"] = ""
+
+        # ---- Next fixture (+ Note block when not live) ----
         if nxt:
             home = nxt.get("strHomeTeam", "")
             away = nxt.get("strAwayTeam", "")
@@ -459,10 +565,57 @@ class OxfordUnitedPlugin(PluginBase):
 
             if home == TEAM_NAME:
                 data["next_opponent"] = self._abbr(away)
+                data["next_opponent_full"] = away[:40]
+                data["next_home_away"] = "HOME"
+                data["next_ha"] = "H"
                 data["formatted_next"] = f"NEXT {TEAM_SHORT} vs {self._abbr(away)}"[:22]
             else:
                 data["next_opponent"] = self._abbr(home)
+                data["next_opponent_full"] = home[:40]
+                data["next_home_away"] = "AWAY"
+                data["next_ha"] = "A"
                 data["formatted_next"] = f"NEXT {self._abbr(home)} vs {TEAM_SHORT}"[:22]
+
+            # Note 15×3 block when no match in progress
+            # Row1: NEXT H/A   Row2: opponent   Row3: date time
+            ha = data["next_ha"]
+            opp = self._truncate(data["next_opponent_full"].upper(), 15)
+            # Prefer short date e.g. 01 NOV 15:00
+            date_disp = date
+            try:
+                if date and len(date) >= 10:
+                    dt = datetime.strptime(date[:10], "%Y-%m-%d")
+                    date_disp = dt.strftime("%d %b").upper()
+            except ValueError:
+                date_disp = date[:9]
+            when = f"{date_disp} {time_str}".strip()[:15]
+            r1 = f"NEXT {ha}".ljust(15)[:15]
+            r2 = opp.ljust(15)[:15]
+            r3 = when.ljust(15)[:15]
+            data["next_row1"] = r1
+            data["next_row2"] = r2
+            data["next_row3"] = r3
+            data["next_match_block"] = f"{r1}\n{r2}\n{r3}"
+            data["next_match_line"] = self._truncate(
+                f"NEXT {ha} {data['next_opponent']} {when}", 45
+            )
+        else:
+            data["next_home_away"] = ""
+            data["next_ha"] = ""
+            data["next_opponent_full"] = ""
+            data["next_row1"] = ""
+            data["next_row2"] = ""
+            data["next_row3"] = ""
+            data["next_match_block"] = ""
+            data["next_match_line"] = ""
+
+        # Primary board block: live scores vs next match
+        if in_progress:
+            data["match_block"] = data.get("formatted_live") or data.get("formatted_last") or ""
+            data["display_mode"] = "LIVE"
+        else:
+            data["match_block"] = data.get("next_match_line") or data.get("formatted_next") or ""
+            data["display_mode"] = "NEXT"
 
         return data
 

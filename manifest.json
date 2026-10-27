@@ -1,51 +1,57 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.1.1",
-  "description": "English League One standings, last result (HT/FT + scorers) and next fixture for Oxford United. Save plugin settings on Integrations to force-refresh scores.",
-  "author": "Community",
+  "version": "1.2.0",
+  "description": "Oxford United: live match (minute, HT/FT, scorers) with refresh every n seconds (default 120) and Run refresh now. When idle, next opponent H/A date/time block.",
+  "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
   "repository": "https://github.com/peterdgreenway/fiestaboard-plugin--oxford-united",
-  "teaser": "OXF 1-0 HT 0-0 ",
+  "teaser": "LIVE 1-0 67'   ",
   "previews": [
+    {
+      "device_type": "note",
+      "rows": [
+        "LIVE 1-0 67'   ",
+        "OXF vs BRA     ",
+        "Cheek 67'      "
+      ]
+    },
     {
       "device_type": "flagship",
       "rows": [
         "   OXFORD UNITED      ",
-        "OXF  8th  18pts       ",
-        "OXF 1-0 BRA           ",
-        "HT 0-0  FT 1-0        ",
+        "LIVE  OXF 1-0 BRA     ",
+        "MIN 67'  HT 0-0       ",
         "Cheek 67'             ",
-        "Form WWDLW            "
-      ]
-    },
-    {
-      "device_type": "note",
-      "rows": [
-        "OXFORD UNITED  ",
-        "1-0 vs BRA     ",
-        "Cheek 67'      "
+        "                      ",
+        "                      "
       ]
     }
   ],
   "settings_schema": {
     "type": "object",
     "properties": {
+      "run_refresh_now": {
+        "type": "boolean",
+        "title": "Run refresh now",
+        "description": "Turn ON and Save Changes to fetch the latest live score, minute and scorers immediately.",
+        "default": false
+      },
+      "refresh_seconds": {
+        "type": "integer",
+        "title": "Refresh interval while live (seconds)",
+        "description": "How often to re-fetch when a match is in progress. Default 120. Also set FiestaBoard page refresh to match.",
+        "default": 120,
+        "minimum": 60,
+        "maximum": 3600
+      },
       "api_key": {
         "type": "string",
         "title": "TheSportsDB API Key (optional)",
         "description": "Free key '123' works. Premium key gives higher limits.",
         "default": "123",
         "ui:widget": "password"
-      },
-      "refresh_seconds": {
-        "type": "integer",
-        "title": "Refresh Interval (seconds)",
-        "description": "How often to refresh data automatically (minimum 120). To update immediately: open Integrations \u2192 Oxford United \u2192 Save Changes (clears cache and re-fetches scores).",
-        "default": 300,
-        "minimum": 120,
-        "maximum": 3600
       },
       "show_form": {
         "type": "boolean",
@@ -104,7 +110,25 @@
       "next_date",
       "next_time",
       "next_opponent",
-      "last_updated"
+      "last_updated",
+      "match_in_progress",
+      "is_live",
+      "current_minute",
+      "formatted_minute",
+      "formatted_live",
+      "live_status",
+      "display_mode",
+      "match_block",
+      "next_home_away",
+      "next_ha",
+      "next_opponent_full",
+      "next_row1",
+      "next_row2",
+      "next_row3",
+      "next_match_block",
+      "next_match_line",
+      "run_refresh_now",
+      "refresh_seconds"
     ],
     "arrays": {
       "goals": {
@@ -168,7 +192,25 @@
     "goals.*.team": 6,
     "goals.*.is_home": 1,
     "goals.*.is_own": 1,
-    "goals.*.formatted": 18
+    "goals.*.formatted": 18,
+    "match_in_progress": 3,
+    "is_live": 3,
+    "current_minute": 8,
+    "formatted_minute": 15,
+    "formatted_live": 22,
+    "live_status": 20,
+    "display_mode": 4,
+    "match_block": 45,
+    "next_home_away": 4,
+    "next_ha": 1,
+    "next_opponent_full": 40,
+    "next_row1": 15,
+    "next_row2": 15,
+    "next_row3": 15,
+    "next_match_block": 50,
+    "next_match_line": 45,
+    "run_refresh_now": 3,
+    "refresh_seconds": 6
   },
   "env_vars": [
     {

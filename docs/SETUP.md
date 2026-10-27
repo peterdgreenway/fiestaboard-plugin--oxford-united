@@ -93,3 +93,35 @@ curl -s -X PUT http://localhost:4420/api/plugins/oxford_united/config \
 ```
 
 Then wait for the next display cycle, or trigger a board refresh from the main dashboard if your FiestaBoard version exposes one.
+
+
+## Live match & refresh
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| **Run refresh now** | off | ON + **Save Changes** → immediate score/scorers/minute update |
+| **Refresh interval** | **120** s | Polling while a match is in progress |
+
+### When match is in progress (`match_in_progress` = YES)
+
+Variables: `current_minute`, `ht_score`, `ft_score` (current score), `formatted_scorers`, `formatted_live`
+
+### When no match is live (`match_in_progress` = NO)
+
+Next opponent Note block (15×3):
+
+```
+{{oxford_united.next_row1}}
+{{oxford_united.next_row2}}
+{{oxford_united.next_row3}}
+```
+
+Example:
+
+```
+NEXT H
+BOLTON
+01 NOV 15:00
+```
+
+Also: `next_match_line`, `next_home_away` (HOME/AWAY), `next_ha` (H/A), `next_date`, `next_time`
