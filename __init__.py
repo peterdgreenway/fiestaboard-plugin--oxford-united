@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,7 +31,7 @@ TEAM_SHORT = "OXF"
 BASE_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}"
 
 # Timeline event types that count as goals
-GOAL_TYPES = {"goal", "penalty", "own goal", "penalty goal"}
+GOAL_TYPES = {"goal", "penalty", "own goal", "penalty goal", "score", "g"}
 
 
 class OxfordUnitedPlugin(PluginBase):
@@ -218,32 +219,110 @@ class OxfordUnitedPlugin(PluginBase):
     # Goal / HT helpers
     # ------------------------------------------------------------------
 
-    def _parse_goals(self, timeline: List[Dict]) -> List[Dict[str, Any]]:
-        """Extract ordered goal events with minute, scorer, team side."""
+    def _is_goal_event(self, t: Dict) -> bool:
+        """True if timeline row is a goal (handles varied TheSportsDB labels)."""
+        kind = (t.get("strTimeline") or t.get("strEvent") or "").strip().lower()
+        detail = (t.get("strTimelineDetail") or t.get("strDetail") or "").strip().lower()
+        combined = f"{kind} {detail}"
+        if any(x in combined for x in ("card", "subst", "var check", "injury")):
+            if "goal" not in combined:
+                return False
+        if kind in GOAL_TYPES:
+            return True
+        if "goal" in kind or "goal" in detail or "penalty" in detail:
+            return True
+        return False
+
+    def _parse_goal_details_string(
+        self, details: str, is_home: bool, team: str
+    ) -> List[Dict[str, Any]]:
+        """Parse TheSportsDB strHomeGoalDetails / strAwayGoalDetails.
+
+        Formats seen:
+          67':Mark Harris
+          10':Player1;45':Player2
+          90'+2':Name
+        """
         goals: List[Dict[str, Any]] = []
-        for t in timeline:
+        if not details or not str(details).strip():
+            return goals
+        parts = re.split(r"[;\n]+", str(details))
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            m = re.match(
+                r"^(?P<min>\d+)(?:\+\d+)?'?\s*:\s*(?P<player>.+)$",
+                part,
+            )
+            if not m:
+                m = re.match(
+                    r"^(?P<min>\d+)(?:'\+\d+)?\s+(?P<player>.+)$",
+                    part,
+                )
+            if not m:
+                continue
+            try:
+                minute = int(m.group("min"))
+            except ValueError:
+                minute = 0
+            player = m.group("player").strip()
+            # Strip trailing (OG) markers for name parse; flag own goal
+            is_own = "(og)" in player.lower() or "own goal" in player.lower()
+            player_clean = re.sub(r"\s*\(og\)\s*", " ", player, flags=re.I).strip()
+            name_info = self._name_parts(player_clean)
+            goals.append(
+                {
+                    "minute": minute,
+                    "player": player_clean,
+                    "player_short": name_info["display_short"],
+                    "player_display": name_info["display"],
+                    "forename": name_info["forename"],
+                    "initial": name_info["initial"],
+                    "surname": name_info["surname"],
+                    "team": team,
+                    "is_home": is_home,
+                    "is_own": is_own,
+                    "detail": "goal_details",
+                }
+            )
+        return goals
+
+    def _parse_goals(
+        self, timeline: List[Dict], event: Optional[Dict] = None
+    ) -> List[Dict[str, Any]]:
+        """Extract goals from timeline and/or event GoalDetails strings."""
+        goals: List[Dict[str, Any]] = []
+
+        for t in timeline or []:
+            if not self._is_goal_event(t):
+                continue
             kind = (t.get("strTimeline") or "").strip().lower()
             detail = (t.get("strTimelineDetail") or "").strip().lower()
-            if kind not in GOAL_TYPES and "goal" not in detail and kind != "goal":
-                # Accept "Goal" + "Normal Goal" / "Penalty" etc.
-                if kind != "goal" and "goal" not in kind:
-                    continue
-
             try:
-                minute = int(t.get("intTime") or 0)
+                minute = int(float(str(t.get("intTime") or t.get("strTime") or 0)))
             except (TypeError, ValueError):
                 minute = 0
-
-            player = (t.get("strPlayer") or "Unknown").strip()
+            player = (
+                t.get("strPlayer")
+                or t.get("strPlayerName")
+                or t.get("strScorer")
+                or "Unknown"
+            )
+            player = str(player).strip()
             team = (t.get("strTeam") or "").strip()
-            is_home = (t.get("strHome") or "").strip().lower() in ("yes", "1", "true")
+            is_home = (t.get("strHome") or "").strip().lower() in ("yes", "1", "true", "home")
             is_own = "own" in kind or "own goal" in detail
-
+            name_info = self._name_parts(player)
             goals.append(
                 {
                     "minute": minute,
                     "player": player,
-                    "player_short": self._short_name(player),
+                    "player_short": name_info["display_short"],
+                    "player_display": name_info["display"],
+                    "forename": name_info["forename"],
+                    "initial": name_info["initial"],
+                    "surname": name_info["surname"],
                     "team": team,
                     "is_home": is_home,
                     "is_own": is_own,
@@ -251,7 +330,25 @@ class OxfordUnitedPlugin(PluginBase):
                 }
             )
 
-        goals.sort(key=lambda g: g["minute"])
+        # Fallback / supplement from event goal detail strings (often populated
+        # when timeline is empty on the free API during live matches).
+        if event:
+            home_team = event.get("strHomeTeam") or ""
+            away_team = event.get("strAwayTeam") or ""
+            home_details = event.get("strHomeGoalDetails") or event.get("strHomeGoals") or ""
+            away_details = event.get("strAwayGoalDetails") or event.get("strAwayGoals") or ""
+            extra = self._parse_goal_details_string(str(home_details), True, home_team)
+            extra += self._parse_goal_details_string(str(away_details), False, away_team)
+            if extra:
+                # Merge by (minute, surname) avoiding duplicates
+                seen = {(g["minute"], g["surname"].lower(), g["is_home"]) for g in goals}
+                for g in extra:
+                    key = (g["minute"], g["surname"].lower(), g["is_home"])
+                    if key not in seen:
+                        goals.append(g)
+                        seen.add(key)
+
+        goals.sort(key=lambda g: (g["minute"], g.get("player", "")))
         return goals
 
     def _derive_ht_ft(
@@ -300,18 +397,66 @@ class OxfordUnitedPlugin(PluginBase):
         except (TypeError, ValueError):
             return None
 
-    def _short_name(self, full: str, max_len: int = 10) -> str:
-        """Surname-focused short form for scorers on a 22-char board."""
-        if not full:
-            return "?"
-        parts = full.strip().split()
+    def _name_parts(self, full: str) -> Dict[str, str]:
+        """Split player name into forename, middle initial, surname.
+
+        Display forms:
+          display       → "Mark H Harris" (forename + initial + surname)
+          display_short → shorter for tight boards e.g. "M H Harris" / "Mark Harris"
+        """
+        if not full or not str(full).strip():
+            return {
+                "forename": "",
+                "initial": "",
+                "surname": "?",
+                "display": "?",
+                "display_short": "?",
+            }
+        parts = str(full).strip().split()
         if len(parts) == 1:
-            return parts[0][:max_len]
-        # Prefer last name; if still long, truncate
+            return {
+                "forename": parts[0],
+                "initial": "",
+                "surname": parts[0],
+                "display": parts[0],
+                "display_short": parts[0][:12],
+            }
+        forename = parts[0]
         surname = parts[-1]
-        if len(surname) <= max_len:
-            return surname
-        return surname[:max_len]
+        middle = parts[1:-1]
+        if middle:
+            # Use first middle name's initial
+            initial = middle[0][0].upper()
+        else:
+            # No middle name: use surname initial as the "initial" slot only if
+            # user asked forename, initial, surname — use forename initial
+            # when no middle name: Forename + F-initial style → Forename I Surname
+            # Interpretation: forename, (middle) initial, surname
+            # With two parts: Forename + Surname initial + Surname → "Mark H Harris"
+            initial = surname[0].upper()
+        display = f"{forename} {initial} {surname}".strip()
+        # Compact: initial of forename + initial + surname
+        display_short = f"{forename[0]} {initial} {surname}".strip()
+        if len(display_short) > 16:
+            display_short = f"{forename[0]} {surname}"[:16]
+        return {
+            "forename": forename[:20],
+            "initial": initial[:1],
+            "surname": surname[:20],
+            "display": display[:40],
+            "display_short": display_short[:20],
+        }
+
+    def _short_name(self, full: str, max_len: int = 16) -> str:
+        """Scorer label: forename + initial + surname (truncated if needed)."""
+        info = self._name_parts(full)
+        display = info["display"]
+        if len(display) <= max_len:
+            return display
+        short = info["display_short"]
+        if len(short) <= max_len:
+            return short
+        return info["surname"][:max_len]
 
     # ------------------------------------------------------------------
     # Display helpers
@@ -358,24 +503,26 @@ class OxfordUnitedPlugin(PluginBase):
         return short.upper()
 
     def _format_scorers_line(self, goals: List[Dict], max_items: int = 4) -> str:
-        """Compact scorer string: 'Cheek 10, X 69' (max ~22 chars)."""
+        """Scorers: 'Mark H Harris 67\'' (forename initial surname + minute)."""
         if not goals:
             return ""
         bits = []
         for g in goals[:max_items]:
-            bits.append(f"{g['player_short']} {g['minute']}'")
-        line = ", ".join(bits)
+            name = g.get("player_display") or g.get("player_short") or g.get("player") or "?"
+            own = " OG" if g.get("is_own") else ""
+            bits.append(f"{name}{own} {g['minute']}'")
+        line = "; ".join(bits)
         if len(goals) > max_items:
-            line = line[:19] + "..."
-        return line[:22]
+            line = line[:40] + "..."
+        return line[:80]
 
-    def _format_scorer_rows(self, goals: List[Dict], max_rows: int = 3) -> List[str]:
-        """One scorer per row for multi-line display."""
+    def _format_scorer_rows(self, goals: List[Dict], max_rows: int = 4) -> List[str]:
+        """One scorer per row: minute + forename initial surname."""
         rows = []
         for g in goals[:max_rows]:
-            side = "H" if g["is_home"] else "A"
-            own = " (OG)" if g["is_own"] else ""
-            rows.append(f"{g['minute']:2d}' {g['player_short']}{own}"[:22])
+            name = g.get("player_display") or g.get("player_short") or "?"
+            own = " OG" if g.get("is_own") else ""
+            rows.append(f"{g['minute']}' {name}{own}"[:45])
         return rows
 
     # ------------------------------------------------------------------
@@ -403,6 +550,10 @@ class OxfordUnitedPlugin(PluginBase):
             "current_minute": self._event_minute(live_event) if in_progress else "",
             "run_refresh_now": "YES" if force_refresh else "NO",
             "refresh_seconds": str(int(self.config.get("refresh_seconds", 120) or 120)),
+            # Vestaboard colour tiles: green = live, red = no game
+            "status_colour": "{66}" if in_progress else "{63}",
+            "status_color": "{66}" if in_progress else "{63}",
+            "status_colour_name": "green" if in_progress else "red",
             "position": "",
             "points": "",
             "played": "",
@@ -481,7 +632,7 @@ class OxfordUnitedPlugin(PluginBase):
             data["last_date"] = date
             data["last_status"] = status
 
-            goals = self._parse_goals(timeline)
+            goals = self._parse_goals(timeline, event=last)
             ht_h, ht_a, ft_h, ft_a = self._derive_ht_ft(last, goals)
 
             if ft_h is not None and ft_a is not None:
@@ -524,13 +675,16 @@ class OxfordUnitedPlugin(PluginBase):
             # Also expose structured list for advanced templates
             data["goals"] = [
                 {
-                    "minute": g["minute"],
-                    "player": g["player_short"],
+                    "minute": str(g["minute"]),
+                    "player": g.get("player_display") or g.get("player_short") or g["player"],
                     "player_full": g["player"],
+                    "forename": g.get("forename", ""),
+                    "initial": g.get("initial", ""),
+                    "surname": g.get("surname", ""),
                     "team": self._abbr(g["team"], 6),
                     "is_home": "Y" if g["is_home"] else "N",
                     "is_own": "Y" if g["is_own"] else "N",
-                    "formatted": f"{g['minute']}' {g['player_short']}",
+                    "formatted": f"{g.get('player_display') or g.get('player_short')} {g['minute']}'",
                 }
                 for g in goals
             ]
@@ -562,7 +716,7 @@ class OxfordUnitedPlugin(PluginBase):
 
             # Dedicated live summary block (Note-friendly 15×3)
             # Row1: LIVE           Row2: OXF 1-0 BRA    Row3: 67'
-            r1 = "LIVE".center(15)[:15]
+            r1 = "{66} LIVE".ljust(14)  # 1 colour tile + text
             if score:
                 r2 = f"{home_ab} {score} {away_ab}".strip()
                 r2 = r2[:15].center(15)[:15] if len(r2) < 15 else r2[:15]
@@ -681,7 +835,8 @@ class OxfordUnitedPlugin(PluginBase):
             except ValueError:
                 date_disp = date[:9]
 
-            r1 = "No game now".ljust(15)[:15]
+            r1 = ("{63} No game").ljust(14)[:20]  # red tile + text
+            r1 = "{63} No game"  # 1 tile + 8 chars = 9 tiles
             if ha and opp_short:
                 r2 = f"NEXT {ha} {opp_short}".strip()[:15].ljust(15)
             elif data.get("formatted_next"):

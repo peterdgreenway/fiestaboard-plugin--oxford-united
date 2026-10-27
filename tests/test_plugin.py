@@ -87,7 +87,7 @@ class TestOxfordUnitedPlugin:
         goals = plugin._parse_goals(timeline)
         assert len(goals) == 2
         assert goals[0]["minute"] == 10
-        assert goals[0]["player_short"] == "Cheek"
+        assert "Cheek" in goals[0]["player_short"] or "Cheek" in goals[0].get("player_display","")
         assert goals[0]["is_home"] is True
         assert goals[1]["minute"] == 55
         assert goals[1]["is_home"] is False
