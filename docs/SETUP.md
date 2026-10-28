@@ -193,3 +193,17 @@ If the API returns no timeline mid-match, last good scorers for that `idEvent` a
 {{oxford_united.form_coloured}}
 ```
 W = green `{66}`, D = yellow `{65}`, L = red `{63}`
+
+
+## Scheduled game refresh windows
+
+When **Scheduled game refresh windows** is on (default):
+
+| Day | Live refresh ON | Live refresh OFF |
+|-----|-----------------|------------------|
+| **Saturday** | **15:00** UK | **17:00** UK |
+| **Tuesday** | **19:45** UK | **21:45** UK |
+
+During the window, `suggested_refresh_seconds` uses the **live** interval (default 120s) even if the API has not yet flagged the match as live. Outside the window (and with no live match), the **idle** interval applies (default 1800s).
+
+Variables: `scheduled_refresh_active`, `scheduled_window`, `refresh_mode` (`LIVE` / `SCHEDULED` / `IDLE`).

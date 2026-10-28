@@ -1,8 +1,8 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.4.2",
-  "description": "Oxford United: adaptive live/idle refresh, 1H/HT/2H/FT + stoppage, scorer cache, coloured form tiles, kick-off countdown.",
+  "version": "1.5.0",
+  "description": "Oxford United League One. Auto live-refresh Sat 15:00\u201317:00 & Tue 19:45\u201321:45 UK; scorers, form tiles, next fixture when idle.",
   "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
@@ -37,6 +37,12 @@
         "title": "Run refresh now",
         "description": "Turn ON and Save Changes to fetch the latest live score, minute and scorers immediately.",
         "default": false
+      },
+      "scheduled_refresh_enabled": {
+        "type": "boolean",
+        "title": "Scheduled game refresh windows",
+        "description": "When on, live-rate refresh is active Saturday 15:00\u201317:00 and Tuesday 19:45\u201321:45 (UK time), even if the API has not marked a match live yet. Outside those windows, idle refresh applies unless a match is in progress.",
+        "default": true
       },
       "refresh_seconds": {
         "type": "integer",
@@ -195,7 +201,10 @@
       "form_letters",
       "form_games",
       "form_tiles_last3",
-      "form_style"
+      "form_style",
+      "scheduled_refresh_active",
+      "scheduled_window",
+      "scheduled_refresh_enabled"
     ],
     "arrays": {
       "goals": {
@@ -308,7 +317,10 @@
     "form_letters": 30,
     "form_games": 1,
     "form_tiles_last3": 12,
-    "form_style": 16
+    "form_style": 16,
+    "scheduled_refresh_active": 3,
+    "scheduled_window": 20,
+    "scheduled_refresh_enabled": 3
   },
   "env_vars": [
     {

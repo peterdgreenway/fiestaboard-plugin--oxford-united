@@ -66,6 +66,10 @@ class OxfordUnitedPlugin(PluginBase):
             errors.append("form_games must be 3 or 5")
         if "form_show_letters" in config and not isinstance(config["form_show_letters"], bool):
             errors.append("form_show_letters must be a boolean")
+        if "scheduled_refresh_enabled" in config and not isinstance(
+            config["scheduled_refresh_enabled"], bool
+        ):
+            errors.append("scheduled_refresh_enabled must be a boolean")
         style = config.get("form_style", "last_5_letters")
         allowed = {
             "last_5_letters", "last_3_letters", "last_5_tiles", "last_3_tiles",
@@ -298,6 +302,50 @@ class OxfordUnitedPlugin(PluginBase):
         else:
             suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
         return f"{n}{suffix}"
+
+
+    def _in_scheduled_refresh_window(self, now=None) -> bool:
+        """True during fixed UK kick-off windows when auto-refresh is enabled.
+
+        Saturday 15:00–17:00 and Tuesday 19:45–21:45 (Europe/London).
+        """
+        if not bool(self.config.get("scheduled_refresh_enabled", True)):
+            return False
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Europe/London")
+            now = now or datetime.now(tz)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=tz)
+            else:
+                now = now.astimezone(tz)
+        except Exception:
+            now = now or datetime.now(timezone.utc)
+
+        weekday = now.weekday()  # Mon=0 … Sat=5, Tue=1
+        minutes = now.hour * 60 + now.minute
+
+        # Saturday 15:00–17:00
+        if weekday == 5:
+            return (15 * 60) <= minutes <= (17 * 60)
+        # Tuesday 19:45–21:45
+        if weekday == 1:
+            return (19 * 60 + 45) <= minutes <= (21 * 60 + 45)
+        return False
+
+    def _scheduled_window_label(self, now=None) -> str:
+        if not self._in_scheduled_refresh_window(now):
+            return ""
+        try:
+            from zoneinfo import ZoneInfo
+            now = now or datetime.now(ZoneInfo("Europe/London"))
+            if now.weekday() == 5:
+                return "SAT 15:00-17:00"
+            if now.weekday() == 1:
+                return "TUE 19:45-21:45"
+        except Exception:
+            pass
+        return "SCHEDULED"
 
     def _truncate(self, text: str, max_len: int) -> str:
         text = (text or "").strip()
@@ -635,6 +683,18 @@ class OxfordUnitedPlugin(PluginBase):
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         in_progress = live_event is not None
+        live_refresh = int(self.config.get("refresh_seconds", 120) or 120)
+        idle_refresh = int(self.config.get("idle_refresh_seconds", 1800) or 1800)
+        # Auto live-refresh windows: Sat 15:00–17:00, Tue 19:45–21:45 UK
+        scheduled_on = self._in_scheduled_refresh_window()
+        active_refresh = in_progress or scheduled_on
+        suggested = live_refresh if active_refresh else idle_refresh
+        if in_progress:
+            refresh_mode = "LIVE"
+        elif scheduled_on:
+            refresh_mode = "SCHEDULED"
+        else:
+            refresh_mode = "IDLE"
 
         data: Dict[str, Any] = {
             "team": TEAM_SHORT,
@@ -642,15 +702,15 @@ class OxfordUnitedPlugin(PluginBase):
             "is_live": "YES" if in_progress else "NO",
             "current_minute": self._event_minute(live_event) if in_progress else "",
             "run_refresh_now": "YES" if force_refresh else "NO",
-            "refresh_seconds": str(int(self.config.get("refresh_seconds", 120) or 120)),
-            "idle_refresh_seconds": str(int(self.config.get("idle_refresh_seconds", 1800) or 1800)),
-            # Suggested interval for FiestaBoard: live=120s default, idle=30min default
-            "suggested_refresh_seconds": str(
-                int(self.config.get("refresh_seconds", 120) or 120)
-                if in_progress
-                else int(self.config.get("idle_refresh_seconds", 1800) or 1800)
+            "refresh_seconds": str(live_refresh),
+            "idle_refresh_seconds": str(idle_refresh),
+            "suggested_refresh_seconds": str(suggested),
+            "refresh_mode": refresh_mode,
+            "scheduled_refresh_active": "YES" if scheduled_on else "NO",
+            "scheduled_window": self._scheduled_window_label() if scheduled_on else "",
+            "scheduled_refresh_enabled": (
+                "YES" if bool(self.config.get("scheduled_refresh_enabled", True)) else "NO"
             ),
-            "refresh_mode": "LIVE" if in_progress else "IDLE",
             # Game Status Indicator: green = live, yellow = no game
             "status_colour": "{66}" if in_progress else "{65}",
             "status_color": "{66}" if in_progress else "{65}",
