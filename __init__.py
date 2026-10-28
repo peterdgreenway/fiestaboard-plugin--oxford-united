@@ -33,6 +33,11 @@ BASE_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}"
 # Timeline event types that count as goals
 GOAL_TYPES = {"goal", "penalty", "own goal", "penalty goal", "score", "g"}
 
+_SCORER_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+GREEN = "{66}"
+YELLOW = "{65}"
+RED = "{63}"
+
 
 class OxfordUnitedPlugin(PluginBase):
     """Oxford United League One standings + fixtures + match detail."""
@@ -46,6 +51,9 @@ class OxfordUnitedPlugin(PluginBase):
         refresh = config.get("refresh_seconds", 120)
         if not isinstance(refresh, int) or refresh < 60:
             errors.append("refresh_seconds must be an integer >= 60 (default 120 while live)")
+        idle = config.get("idle_refresh_seconds", 1800)
+        if not isinstance(idle, int) or idle < 300:
+            errors.append("idle_refresh_seconds must be an integer >= 300 (default 1800)")
         if "run_refresh_now" in config and not isinstance(config["run_refresh_now"], bool):
             errors.append("run_refresh_now must be a boolean")
         max_scorers = config.get("max_scorers", 4)
@@ -187,11 +195,52 @@ class OxfordUnitedPlugin(PluginBase):
             return ""
         progress = (event.get("strProgress") or "").strip()
         if progress:
-            # Normalise 67' / 45+2 / HT
-            return progress.replace(" ", "")[:8]
+            return self._format_stoppage_minute(progress)
         status = (event.get("strStatus") or "").upper()
         if "HT" in status or "HALF" in status:
             return "HT"
+        if "FT" in status or "FINISH" in status:
+            return "FT"
+        return ""
+
+    def _format_stoppage_minute(self, progress: str) -> str:
+        """Normalise stoppage e.g. 90+3' / 45+2."""
+        p = (progress or "").strip().replace(" ", "")
+        if not p:
+            return ""
+        if not p.endswith("'") and re.match(r"^\d+(\+\d+)?$", p):
+            p = p + "'"
+        return p[:10]
+
+    def _match_period(self, event: Optional[Dict]) -> str:
+        """Half / phase: 1H, HT, 2H, FT."""
+        if not event:
+            return ""
+        status = (event.get("strStatus") or "").lower()
+        progress = (event.get("strProgress") or "").strip().upper()
+        if any(x in status for x in ("finish", "ft", "aet", "pen")) or progress == "FT":
+            return "FT"
+        if "half" in status or progress in ("HT", "HALF"):
+            return "HT"
+        minute_raw = progress.replace("'", "")
+        try:
+            if "+" in minute_raw:
+                base = int(minute_raw.split("+")[0] or 0)
+            else:
+                base = int("".join(c for c in minute_raw if c.isdigit()) or 0)
+            if base == 0 and ("1h" in status or "1st" in status):
+                return "1H"
+            if base <= 45 or "1h" in status or "1st" in status:
+                return "1H"
+            return "2H"
+        except ValueError:
+            pass
+        if "1h" in status or "1st" in status:
+            return "1H"
+        if "2h" in status or "2nd" in status:
+            return "2H"
+        if self._status_is_live(event):
+            return "1H"
         return ""
 
     def _find_live_event(
@@ -205,6 +254,29 @@ class OxfordUnitedPlugin(PluginBase):
             if ev and self._status_is_live(ev):
                 return ev
         return None
+
+    @staticmethod
+    def _form_coloured(form: str, max_results: int = 5) -> str:
+        """W/D/L form as Vestaboard colour + letter tiles (green/yellow/red)."""
+        out = []
+        for ch in (form or "").upper().replace(" ", "")[:max_results]:
+            if ch == "W":
+                out.append(f"{GREEN}W")
+            elif ch == "D":
+                out.append(f"{YELLOW}D")
+            elif ch == "L":
+                out.append(f"{RED}L")
+        return "".join(out)
+
+    @staticmethod
+    def _ordinal(n: int) -> str:
+        """English ordinal: 1st, 2nd, 3rd, 4th … 11th, 12th, 13th, 21st, 22nd, 23rd."""
+        n = int(n)
+        if 11 <= (n % 100) <= 13:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix}"
 
     def _truncate(self, text: str, max_len: int) -> str:
         text = (text or "").strip()
@@ -550,6 +622,14 @@ class OxfordUnitedPlugin(PluginBase):
             "current_minute": self._event_minute(live_event) if in_progress else "",
             "run_refresh_now": "YES" if force_refresh else "NO",
             "refresh_seconds": str(int(self.config.get("refresh_seconds", 120) or 120)),
+            "idle_refresh_seconds": str(int(self.config.get("idle_refresh_seconds", 1800) or 1800)),
+            # Suggested interval for FiestaBoard: live=120s default, idle=30min default
+            "suggested_refresh_seconds": str(
+                int(self.config.get("refresh_seconds", 120) or 120)
+                if in_progress
+                else int(self.config.get("idle_refresh_seconds", 1800) or 1800)
+            ),
+            "refresh_mode": "LIVE" if in_progress else "IDLE",
             # Game Status Indicator: green = live, yellow = no game
             "status_colour": "{66}" if in_progress else "{65}",
             "status_color": "{66}" if in_progress else "{65}",
@@ -566,6 +646,8 @@ class OxfordUnitedPlugin(PluginBase):
             "ga": "",
             "gd": "",
             "form": "",
+            "form_coloured": "",
+            "form_tiles": "",
             # Last match identity
             "last_home": "",
             "last_away": "",
@@ -619,8 +701,16 @@ class OxfordUnitedPlugin(PluginBase):
                     "form": (standing.get("strForm") or "") if show_form else "",
                 }
             )
-            suffix = f"{pos}th" if pos else "?"
-            data["formatted_table"] = f"{TEAM_SHORT}  {suffix}  {pts}pts".ljust(22)[:22]
+            try:
+                pos_ord = self._ordinal(int(pos)) if str(pos).strip() else "?"
+            except (TypeError, ValueError):
+                pos_ord = f"{pos}" if pos else "?"
+            data["position_ordinal"] = pos_ord
+            data["formatted_table"] = f"{TEAM_SHORT}  {pos_ord}  {pts}pts".ljust(22)[:22]
+            # Form as coloured tiles: W=green D=yellow L=red
+            form_str = data.get("form") or ""
+            data["form_coloured"] = self._form_coloured(form_str) if show_form else ""
+            data["form_tiles"] = data["form_coloured"]
 
         # ---- Last result + HT/FT + scorers ----
         if last:
@@ -666,9 +756,25 @@ class OxfordUnitedPlugin(PluginBase):
                 data["formatted_htft"] = f"HT {data['ht_score']}  FT {ft_part}".ljust(22)[:22]
 
             # Scorers
+            global _SCORER_CACHE
+            eid = str(last.get("idEvent") or "")
+            used_cache = False
+            if goals:
+                if eid:
+                    _SCORER_CACHE[eid] = list(goals)
+            elif eid and eid in _SCORER_CACHE:
+                goals = list(_SCORER_CACHE[eid])
+                used_cache = True
+                logger.info(
+                    "Oxford United: cached scorers for event %s (%s)",
+                    eid,
+                    len(goals),
+                )
+
             data["scorer_count"] = str(len(goals))
             data["formatted_scorers"] = self._format_scorers_line(goals, max_scorers)
             data["scorers"] = data["formatted_scorers"]
+            data["scorers_from_cache"] = "YES" if used_cache else "NO"
 
             scorer_rows = self._format_scorer_rows(goals, max_rows=4)
             for i, row in enumerate(scorer_rows, start=1):
@@ -694,12 +800,22 @@ class OxfordUnitedPlugin(PluginBase):
         # ---- Live match extras + score/minute block ----
         if in_progress and last:
             data["live_status"] = (last.get("strStatus") or last.get("strProgress") or "LIVE")[:20]
-            minute = data.get("current_minute") or ""
-            if minute:
-                data["formatted_minute"] = f"MIN {minute}"[:15]
+            period = self._match_period(last)
+            data["match_period"] = period
+            raw_prog = (last.get("strProgress") or data.get("current_minute") or "").strip()
+            minute = self._format_stoppage_minute(raw_prog) or data.get("current_minute") or ""
+            data["current_minute"] = minute
+            if period == "HT":
+                data["formatted_minute"] = "HT"[:15]
+                minute = "HT"
+            elif period == "FT":
+                data["formatted_minute"] = "FT"[:15]
+                minute = minute or "FT"
+            elif minute:
+                data["formatted_minute"] = f"{period} {minute}".strip()[:15]
             else:
-                data["formatted_minute"] = "LIVE"[:15]
-                minute = "LIVE"
+                data["formatted_minute"] = (period or "LIVE")[:15]
+                minute = period or "LIVE"
 
             score = (data.get("last_score") or data.get("ft_score") or "").strip()
             # Prefer explicit current score from event if empty
@@ -737,6 +853,7 @@ class OxfordUnitedPlugin(PluginBase):
             data["live_status"] = ""
             data["formatted_minute"] = ""
             data["formatted_live"] = ""
+            data["match_period"] = ""
             data["live_row1"] = ""
             data["live_row2"] = ""
             data["live_row3"] = ""
@@ -768,6 +885,42 @@ class OxfordUnitedPlugin(PluginBase):
                 data["next_home_away"] = "AWAY"
                 data["next_ha"] = "A"
                 data["formatted_next"] = f"NEXT {self._abbr(home)} vs {TEAM_SHORT}"[:22]
+
+            # Kick-off countdown when next fixture is today (UK-oriented local)
+            data["kickoff_in_minutes"] = ""
+            data["kickoff_countdown"] = ""
+            try:
+                if date and len(date) >= 10:
+                    tparts = (time_str or "00:00").split(":")
+                    hh, mm = int(tparts[0]), int(tparts[1]) if len(tparts) > 1 else 0
+                    kick = datetime(
+                        int(date[0:4]), int(date[5:7]), int(date[8:10]),
+                        hh, mm, tzinfo=timezone.utc,
+                    )
+                    # Treat API time as UK local approximately via Europe/London if available
+                    try:
+                        from zoneinfo import ZoneInfo
+                        kick = kick.replace(tzinfo=None)
+                        kick = datetime(
+                            int(date[0:4]), int(date[5:7]), int(date[8:10]), hh, mm,
+                            tzinfo=ZoneInfo("Europe/London"),
+                        )
+                        now_local = datetime.now(ZoneInfo("Europe/London"))
+                    except Exception:
+                        now_local = datetime.now(timezone.utc)
+                        if kick.tzinfo is None:
+                            kick = kick.replace(tzinfo=timezone.utc)
+                    delta_m = int((kick - now_local).total_seconds() // 60)
+                    if 0 <= delta_m <= 24 * 60:
+                        data["kickoff_in_minutes"] = str(delta_m)
+                        if delta_m == 0:
+                            data["kickoff_countdown"] = "KICK OFF"
+                        elif delta_m < 60:
+                            data["kickoff_countdown"] = f"KO in {delta_m}m"
+                        else:
+                            data["kickoff_countdown"] = f"KO in {delta_m // 60}h{delta_m % 60:02d}m"
+            except Exception:
+                pass
 
             # Note 15×3 block when no match in progress
             # Row1: NEXT H/A   Row2: opponent   Row3: date time

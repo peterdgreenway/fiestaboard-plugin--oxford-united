@@ -165,3 +165,31 @@ Example:
 {{oxford_united.game_status_indicator}}
 {{oxford_united.status_colour}}
 ```
+
+
+## Adaptive refresh (#5)
+
+| Mode | Default interval | Variable |
+|------|------------------|----------|
+| Live match | **120** s | `refresh_seconds` |
+| Idle | **1800** s (30 min) | `idle_refresh_seconds` |
+
+Use `{{oxford_united.suggested_refresh_seconds}}` / `refresh_mode` (`LIVE`/`IDLE`) to align FiestaBoard page refresh.
+
+## Live period & stoppage (#1)
+
+`match_period`: `1H` / `HT` / `2H` / `FT`  
+`current_minute`: e.g. `67'` or `90+3'`  
+`kickoff_countdown`: e.g. `KO in 45m` when next game is today
+
+## Scorer cache (#4)
+
+If the API returns no timeline mid-match, last good scorers for that `idEvent` are kept.  
+`scorers_from_cache` = YES when serving cache.
+
+## Coloured form (#2)
+
+```
+{{oxford_united.form_coloured}}
+```
+W = green `{66}`, D = yellow `{65}`, L = red `{63}`
