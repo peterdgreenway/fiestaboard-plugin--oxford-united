@@ -61,6 +61,11 @@ class OxfordUnitedPlugin(PluginBase):
             not isinstance(max_scorers, int) or max_scorers < 1 or max_scorers > 8
         ):
             errors.append("max_scorers must be an integer 1-8")
+        fg = config.get("form_games", 5)
+        if fg not in (3, 5) and fg not in ("3", "5"):
+            errors.append("form_games must be 3 or 5")
+        if "form_show_letters" in config and not isinstance(config["form_show_letters"], bool):
+            errors.append("form_show_letters must be a boolean")
         return errors
 
     def on_config_change(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
@@ -256,16 +261,23 @@ class OxfordUnitedPlugin(PluginBase):
         return None
 
     @staticmethod
-    def _form_coloured(form: str, max_results: int = 5) -> str:
-        """W/D/L form as Vestaboard colour + letter tiles (green/yellow/red)."""
+    def _form_coloured(
+        form: str,
+        max_results: int = 5,
+        show_letters: bool = True,
+    ) -> str:
+        """W/D/L form as Vestaboard colour tiles; optional W/D/L letters.
+
+        show_letters=False → only colour flaps (green/yellow/red).
+        """
         out = []
         for ch in (form or "").upper().replace(" ", "")[:max_results]:
             if ch == "W":
-                out.append(f"{GREEN}W")
+                out.append(f"{GREEN}W" if show_letters else GREEN)
             elif ch == "D":
-                out.append(f"{YELLOW}D")
+                out.append(f"{YELLOW}D" if show_letters else YELLOW)
             elif ch == "L":
-                out.append(f"{RED}L")
+                out.append(f"{RED}L" if show_letters else RED)
         return "".join(out)
 
     @staticmethod
@@ -709,8 +721,30 @@ class OxfordUnitedPlugin(PluginBase):
             data["formatted_table"] = f"{TEAM_SHORT}  {pos_ord}  {pts}pts".ljust(22)[:22]
             # Form as coloured tiles: W=green D=yellow L=red
             form_str = data.get("form") or ""
-            data["form_coloured"] = self._form_coloured(form_str) if show_form else ""
-            data["form_tiles"] = data["form_coloured"]
+            form_games = int(self.config.get("form_games", 5) or 5)
+            if form_games not in (3, 5):
+                form_games = 5
+            show_form_letters = bool(self.config.get("form_show_letters", True))
+            # Prefer most recent N results (TheSportsDB strForm is usually newest last)
+            if form_str and len(form_str.replace(" ", "")) > form_games:
+                compact = form_str.upper().replace(" ", "")
+                form_str = compact[-form_games:]
+                data["form"] = form_str
+            if show_form and form_str:
+                data["form_coloured"] = self._form_coloured(
+                    form_str, max_results=form_games, show_letters=show_form_letters
+                )
+                data["form_tiles"] = self._form_coloured(
+                    form_str, max_results=form_games, show_letters=False
+                )
+                data["form_letters"] = self._form_coloured(
+                    form_str, max_results=form_games, show_letters=True
+                )
+            else:
+                data["form_coloured"] = ""
+                data["form_tiles"] = ""
+                data["form_letters"] = ""
+            data["form_games"] = str(form_games)
 
         # ---- Last result + HT/FT + scorers ----
         if last:
