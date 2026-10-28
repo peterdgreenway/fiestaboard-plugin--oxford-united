@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Oxford United: adaptive live/idle refresh, 1H/HT/2H/FT + stoppage, scorer cache, coloured form tiles, kick-off countdown.",
   "author": "peterdgreenway",
   "icon": "trophy",
@@ -90,6 +90,18 @@
         "title": "Form: show W/D/L letters",
         "description": "When off, form is colour tiles only (green/yellow/red, no letters).",
         "default": true
+      },
+      "form_style": {
+        "type": "string",
+        "title": "Form display style",
+        "description": "last_3_tiles = last three games as colour only (no letters). Other options combine length and letters.",
+        "enum": [
+          "last_5_letters",
+          "last_3_letters",
+          "last_5_tiles",
+          "last_3_tiles"
+        ],
+        "default": "last_5_letters"
       }
     }
   },
@@ -181,7 +193,9 @@
       "idle_refresh_seconds",
       "refresh_mode",
       "form_letters",
-      "form_games"
+      "form_games",
+      "form_tiles_last3",
+      "form_style"
     ],
     "arrays": {
       "goals": {
@@ -292,7 +306,9 @@
     "idle_refresh_seconds": 6,
     "refresh_mode": 4,
     "form_letters": 30,
-    "form_games": 1
+    "form_games": 1,
+    "form_tiles_last3": 12,
+    "form_style": 16
   },
   "env_vars": [
     {

@@ -66,6 +66,15 @@ class OxfordUnitedPlugin(PluginBase):
             errors.append("form_games must be 3 or 5")
         if "form_show_letters" in config and not isinstance(config["form_show_letters"], bool):
             errors.append("form_show_letters must be a boolean")
+        style = config.get("form_style", "last_5_letters")
+        allowed = {
+            "last_5_letters", "last_3_letters", "last_5_tiles", "last_3_tiles",
+            "", None,
+        }
+        if style not in allowed and str(style).lower() not in allowed:
+            errors.append(
+                "form_style must be last_3_tiles, last_5_tiles, last_3_letters, or last_5_letters"
+            )
         return errors
 
     def on_config_change(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
@@ -721,11 +730,22 @@ class OxfordUnitedPlugin(PluginBase):
             data["formatted_table"] = f"{TEAM_SHORT}  {pos_ord}  {pts}pts".ljust(22)[:22]
             # Form as coloured tiles: W=green D=yellow L=red
             form_str = data.get("form") or ""
-            form_games = int(self.config.get("form_games", 5) or 5)
-            if form_games not in (3, 5):
-                form_games = 5
-            show_form_letters = bool(self.config.get("form_show_letters", True))
-            # Prefer most recent N results (TheSportsDB strForm is usually newest last)
+            # form_style overrides form_games + form_show_letters when set
+            style = str(self.config.get("form_style") or "").strip().lower()
+            if style in ("last_3_tiles", "tiles_3", "3_tiles"):
+                form_games, show_form_letters = 3, False
+            elif style in ("last_5_tiles", "tiles_5", "5_tiles"):
+                form_games, show_form_letters = 5, False
+            elif style in ("last_3_letters", "letters_3", "3_letters"):
+                form_games, show_form_letters = 3, True
+            elif style in ("last_5_letters", "letters_5", "5_letters"):
+                form_games, show_form_letters = 5, True
+            else:
+                form_games = int(self.config.get("form_games", 5) or 5)
+                if form_games not in (3, 5):
+                    form_games = 5
+                show_form_letters = bool(self.config.get("form_show_letters", True))
+
             if form_str and len(form_str.replace(" ", "")) > form_games:
                 compact = form_str.upper().replace(" ", "")
                 form_str = compact[-form_games:]
@@ -740,11 +760,21 @@ class OxfordUnitedPlugin(PluginBase):
                 data["form_letters"] = self._form_coloured(
                     form_str, max_results=form_games, show_letters=True
                 )
+                # Always expose last-3 tiles-only for templates
+                compact_all = (data.get("form") or form_str).upper().replace(" ", "")
+                last3 = compact_all[-3:] if len(compact_all) >= 3 else compact_all
+                data["form_tiles_last3"] = self._form_coloured(
+                    last3, max_results=3, show_letters=False
+                )
             else:
                 data["form_coloured"] = ""
                 data["form_tiles"] = ""
                 data["form_letters"] = ""
+                data["form_tiles_last3"] = ""
             data["form_games"] = str(form_games)
+            data["form_style"] = style or (
+                f"last_{form_games}_{'letters' if show_form_letters else 'tiles'}"
+            )
 
         # ---- Last result + HT/FT + scorers ----
         if last:
