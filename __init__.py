@@ -666,6 +666,29 @@ class OxfordUnitedPlugin(PluginBase):
             rows.append(f"{g['minute']}' {name}{own}"[:45])
         return rows
 
+    def _format_scorers_surname_line(self, goals: List[Dict], max_items: int = 4) -> str:
+        """Surname only + minute: 'Harris 67'; Brannagan 12\''."""
+        if not goals:
+            return ""
+        bits = []
+        for g in goals[:max_items]:
+            name = (g.get("surname") or g.get("player_short") or "?").strip()
+            own = " OG" if g.get("is_own") else ""
+            bits.append(f"{name}{own} {g['minute']}'")
+        line = "; ".join(bits)
+        if len(goals) > max_items:
+            line = line[:40] + "..."
+        return line[:80]
+
+    def _format_scorer_surname_rows(self, goals: List[Dict], max_rows: int = 4) -> List[str]:
+        """One row per scorer: minute + surname only."""
+        rows = []
+        for g in goals[:max_rows]:
+            name = (g.get("surname") or "?").strip()
+            own = " OG" if g.get("is_own") else ""
+            rows.append(f"{g['minute']}' {name}{own}"[:22])
+        return rows
+
     # ------------------------------------------------------------------
     # Data shaping
     # ------------------------------------------------------------------
@@ -755,6 +778,8 @@ class OxfordUnitedPlugin(PluginBase):
             "formatted_last": "",
             "formatted_htft": "",
             "formatted_scorers": "",
+            "formatted_scorers_surname": "",
+            "scorers_surname": "",
             "formatted_next": "",
             "next_home": "",
             "next_away": "",
@@ -904,6 +929,19 @@ class OxfordUnitedPlugin(PluginBase):
             for i, row in enumerate(scorer_rows, start=1):
                 data[f"scorer_{i}"] = row
 
+            data["formatted_scorers_surname"] = self._format_scorers_surname_line(
+                goals, max_scorers
+            )
+            data["scorers_surname"] = data["formatted_scorers_surname"]
+            surname_rows = self._format_scorer_surname_rows(goals, max_rows=4)
+            for i, row in enumerate(surname_rows, start=1):
+                data[f"scorer_{i}_surname"] = row
+                # Also bare surname without minute
+                if i <= len(goals):
+                    data[f"scorer_{i}_surname_only"] = (
+                        goals[i - 1].get("surname") or ""
+                    )[:20]
+
             # Also expose structured list for advanced templates
             data["goals"] = [
                 {
@@ -917,6 +955,7 @@ class OxfordUnitedPlugin(PluginBase):
                     "is_home": "Y" if g["is_home"] else "N",
                     "is_own": "Y" if g["is_own"] else "N",
                     "formatted": f"{g.get('player_display') or g.get('player_short')} {g['minute']}'",
+                    "formatted_surname": f"{g.get('surname') or '?'} {g['minute']}'",
                 }
                 for g in goals
             ]

@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Oxford United League One. Auto live-refresh Sat 15:00\u201317:00 & Tue 19:45\u201321:45 UK; scorers, form tiles, next fixture when idle.",
   "author": "peterdgreenway",
   "icon": "trophy",
@@ -204,7 +204,17 @@
       "form_style",
       "scheduled_refresh_active",
       "scheduled_window",
-      "scheduled_refresh_enabled"
+      "scheduled_refresh_enabled",
+      "formatted_scorers_surname",
+      "scorers_surname",
+      "scorer_1_surname",
+      "scorer_2_surname",
+      "scorer_3_surname",
+      "scorer_4_surname",
+      "scorer_1_surname_only",
+      "scorer_2_surname_only",
+      "scorer_3_surname_only",
+      "scorer_4_surname_only"
     ],
     "arrays": {
       "goals": {
@@ -216,7 +226,8 @@
           "team",
           "is_home",
           "is_own",
-          "formatted"
+          "formatted",
+          "formatted_surname"
         ]
       }
     }
@@ -320,7 +331,17 @@
     "form_style": 16,
     "scheduled_refresh_active": 3,
     "scheduled_window": 20,
-    "scheduled_refresh_enabled": 3
+    "scheduled_refresh_enabled": 3,
+    "formatted_scorers_surname": 80,
+    "scorers_surname": 80,
+    "scorer_1_surname": 22,
+    "scorer_2_surname": 22,
+    "scorer_3_surname": 22,
+    "scorer_4_surname": 22,
+    "scorer_1_surname_only": 20,
+    "scorer_2_surname_only": 20,
+    "scorer_3_surname_only": 20,
+    "scorer_4_surname_only": 20
   },
   "env_vars": [
     {
