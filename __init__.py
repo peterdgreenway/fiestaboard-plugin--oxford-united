@@ -147,6 +147,7 @@ class OxfordUnitedPlugin(PluginBase):
                 max_scorers,
                 live_event=live,
                 force_refresh=force,
+                last_finished=last if live else None,
             )
             return PluginResult(available=True, data=data)
 
@@ -973,6 +974,7 @@ class OxfordUnitedPlugin(PluginBase):
         max_scorers: int,
         live_event: Optional[Dict] = None,
         force_refresh: bool = False,
+        last_finished: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         in_progress = live_event is not None
@@ -1473,6 +1475,15 @@ class OxfordUnitedPlugin(PluginBase):
                 f"NEXT {ha} {opp_short} {when}".strip(), 45
             ) if (ha or opp_short or when) else data.get("next_match_line", "")
 
+        # Streamlined blocks: league_summary / last_game / match_in_progress / next_game
+        data = self._finalize_data_blocks(
+            data,
+            in_progress=in_progress,
+            last_finished=last_finished if in_progress else last,
+            live_event=live_event,
+            nxt=nxt,
+            max_scorers=max_scorers,
+        )
         return data
 
     def get_formatted_display(self) -> Optional[List[str]]:
@@ -1495,3 +1506,169 @@ class OxfordUnitedPlugin(PluginBase):
         while len(lines) < 6:
             lines.append("")
         return [line.ljust(22)[:22] for line in lines[:6]]
+
+    def _note3(self, r1: str, r2: str, r3: str) -> Dict[str, str]:
+        r1 = (r1 or "")[:22]
+        r2 = (r2 or "")[:15].ljust(15)[:15]
+        r3 = (r3 or "")[:15].ljust(15)[:15]
+        return {
+            "row1": r1[:15].ljust(15)[:15] if "{6" not in r1 else r1[:22],
+            "row2": r2,
+            "row3": r3,
+            "block": f"{r1[:22]}\n{r2}\n{r3}",
+        }
+
+    def _finalize_data_blocks(
+        self,
+        data: Dict[str, Any],
+        *,
+        in_progress: bool,
+        last_finished: Optional[Dict],
+        live_event: Optional[Dict],
+        nxt: Optional[Dict],
+        max_scorers: int,
+    ) -> Dict[str, Any]:
+        """Expose four clear blocks while keeping legacy field names."""
+
+        # ---- league_summary (table + form) ----
+        data["league_summary_position"] = data.get("position") or ""
+        data["league_summary_position_ordinal"] = data.get("position_ordinal") or ""
+        data["league_summary_points"] = data.get("points") or ""
+        data["league_summary_played"] = data.get("played") or ""
+        data["league_summary_won"] = data.get("won") or ""
+        data["league_summary_drawn"] = data.get("drawn") or ""
+        data["league_summary_lost"] = data.get("lost") or ""
+        data["league_summary_gf"] = data.get("gf") or ""
+        data["league_summary_ga"] = data.get("ga") or ""
+        data["league_summary_gd"] = data.get("gd") or ""
+        data["league_summary_form"] = data.get("form") or ""
+        data["league_summary_form_coloured"] = data.get("form_coloured") or ""
+        data["league_summary_form_tiles"] = data.get("form_tiles") or ""
+        data["league_summary_form_tiles_last3"] = data.get("form_tiles_last3") or ""
+        data["league_summary_line"] = data.get("formatted_table") or ""
+        ls = self._note3(
+            data["league_summary_line"] or f"{TEAM_SHORT} LEAGUE",
+            (data.get("form_tiles_last3") or data.get("form_coloured") or data.get("form") or "")[:15],
+            f"P{data.get('played') or '-'} W{data.get('won') or '-'} D{data.get('drawn') or '-'}"[:15],
+        )
+        data["league_summary_note_row1"] = ls["row1"]
+        data["league_summary_note_row2"] = ls["row2"]
+        data["league_summary_note_row3"] = ls["row3"]
+        data["league_summary_note_block"] = ls["block"]
+
+        # ---- last_game (finished only) ----
+        lg_home = lg_away = lg_score = lg_date = lg_result = ""
+        if last_finished and not self._status_is_live(last_finished):
+            lg_home = self._abbr(last_finished.get("strHomeTeam") or "")
+            lg_away = self._abbr(last_finished.get("strAwayTeam") or "")
+            hs = self._to_int(last_finished.get("intHomeScore"))
+            as_ = self._to_int(last_finished.get("intAwayScore"))
+            if hs is not None and as_ is not None:
+                lg_score = f"{hs}-{as_}"
+            lg_date = (last_finished.get("dateEvent") or "")[:10]
+            # Result from Oxford view
+            is_home = str(last_finished.get("idHomeTeam") or "") == TEAM_ID or (
+                last_finished.get("strHomeTeam") == TEAM_NAME
+            )
+            if hs is not None and as_ is not None:
+                if hs == as_:
+                    lg_result = "D"
+                elif (is_home and hs > as_) or (not is_home and as_ > hs):
+                    lg_result = "W"
+                else:
+                    lg_result = "L"
+            # Prefer already-parsed last_* when match_event was the finished game
+            if not in_progress:
+                lg_home = data.get("last_home") or lg_home
+                lg_away = data.get("last_away") or lg_away
+                lg_score = data.get("last_score") or lg_score
+                lg_date = data.get("last_date") or lg_date
+                lg_result = data.get("last_result") or lg_result
+
+        data["last_game_home"] = lg_home
+        data["last_game_away"] = lg_away
+        data["last_game_score"] = lg_score
+        data["last_game_date"] = lg_date
+        data["last_game_result"] = lg_result
+        data["last_game_ht_score"] = data.get("ht_score") or "" if not in_progress else ""
+        data["last_game_scorers"] = data.get("formatted_scorers") or "" if not in_progress else ""
+        data["last_game_line"] = (
+            f"{lg_home} {lg_score} {lg_away}".strip() if lg_score else f"{lg_home} v {lg_away}".strip()
+        )[:22]
+        lg_note = self._note3(
+            "LAST GAME",
+            data["last_game_line"][:15],
+            (lg_date or lg_result or "")[:15],
+        )
+        data["last_game_note_row1"] = lg_note["row1"]
+        data["last_game_note_row2"] = lg_note["row2"]
+        data["last_game_note_row3"] = lg_note["row3"]
+        data["last_game_note_block"] = lg_note["block"]
+        data["last_game_available"] = "YES" if (lg_home or lg_score) else "NO"
+
+        # ---- match_in_progress ----
+        if in_progress and live_event:
+            mip_home = data.get("last_home") or self._abbr(live_event.get("strHomeTeam") or "")
+            mip_away = data.get("last_away") or self._abbr(live_event.get("strAwayTeam") or "")
+            mip_score = data.get("current_score") or data.get("last_score") or ""
+            mip_minute = data.get("current_minute") or self._event_minute(live_event)
+            mip_period = data.get("match_period") or self._match_period(live_event)
+            data["match_in_progress_home"] = mip_home
+            data["match_in_progress_away"] = mip_away
+            data["match_in_progress_score"] = mip_score
+            data["match_in_progress_minute"] = mip_minute
+            data["match_in_progress_period"] = mip_period
+            data["match_in_progress_scorers"] = data.get("formatted_scorers") or ""
+            data["match_in_progress_line"] = f"{mip_score} {mip_minute}".strip()[:22]
+            data["match_in_progress_available"] = "YES"
+            mip_note = self._note3(
+                "{66} LIVE",
+                f"{mip_home} {mip_score} {mip_away}".strip()[:15],
+                (mip_minute or mip_period or "")[:15],
+            )
+            data["match_in_progress_note_row1"] = mip_note["row1"]
+            data["match_in_progress_note_row2"] = mip_note["row2"]
+            data["match_in_progress_note_row3"] = mip_note["row3"]
+            data["match_in_progress_note_block"] = mip_note["block"]
+            # Align legacy live block with this
+            data["live_match_block"] = data["match_in_progress_note_block"]
+            data["live_row1"] = data["match_in_progress_note_row1"]
+            data["live_row2"] = data["match_in_progress_note_row2"]
+            data["live_row3"] = data["match_in_progress_note_row3"]
+        else:
+            for k in (
+                "home", "away", "score", "minute", "period", "scorers", "line",
+            ):
+                data[f"match_in_progress_{k}"] = ""
+            data["match_in_progress_available"] = "NO"
+            idle = self._note3("NO GAME", "AT THE MOMENT", "")
+            data["match_in_progress_note_row1"] = idle["row1"]
+            data["match_in_progress_note_row2"] = idle["row2"]
+            data["match_in_progress_note_row3"] = idle["row3"]
+            data["match_in_progress_note_block"] = idle["block"]
+
+        # ---- next_game ----
+        data["next_game_home"] = data.get("next_home") or (
+            self._abbr(nxt.get("strHomeTeam") or "") if nxt else ""
+        )
+        data["next_game_away"] = data.get("next_away") or (
+            self._abbr(nxt.get("strAwayTeam") or "") if nxt else ""
+        )
+        data["next_game_opponent"] = data.get("next_opponent") or ""
+        data["next_game_date"] = data.get("next_date") or ""
+        data["next_game_time"] = data.get("next_time") or ""
+        data["next_game_home_away"] = data.get("next_home_away") or ""
+        data["next_game_line"] = data.get("formatted_next") or ""
+        data["next_game_available"] = "YES" if (data["next_game_home"] or data["next_game_opponent"]) else "NO"
+        ng = self._note3(
+            "NEXT GAME",
+            (data["next_game_line"] or f"{data['next_game_home']} v {data['next_game_away']}")[:15],
+            f"{data['next_game_date']} {data['next_game_time']}".strip()[:15],
+        )
+        data["next_game_note_row1"] = ng["row1"]
+        data["next_game_note_row2"] = ng["row2"]
+        data["next_game_note_row3"] = ng["row3"]
+        data["next_game_note_block"] = ng["block"]
+
+        return data
+
