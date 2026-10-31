@@ -995,7 +995,7 @@ class OxfordUnitedPlugin(PluginBase):
             "team": TEAM_SHORT,
             "match_in_progress": "YES" if in_progress else "NO",
             "is_live": "YES" if in_progress else "NO",
-            "current_minute": self._event_minute(live_event) if in_progress else "",
+            "current_minute": self._event_minute(live_event) if in_progress else "NO GAME",
             "run_refresh_now": "YES" if force_refresh else "NO",
             "refresh_seconds": str(live_refresh),
             "idle_refresh_seconds": str(idle_refresh),
@@ -1299,9 +1299,7 @@ class OxfordUnitedPlugin(PluginBase):
             data["live_summary"] = f"{home_ab} {score} {away_ab} {minute}".strip()[:45]
         else:
             data["live_status"] = ""
-            data["formatted_minute"] = ""
             data["formatted_live"] = ""
-            data["match_period"] = ""
             data["live_row1"] = ""
             data["live_row2"] = ""
             data["live_row3"] = ""
@@ -1311,6 +1309,16 @@ class OxfordUnitedPlugin(PluginBase):
             data["current_score"] = ""
             data["home_score"] = ""
             data["away_score"] = ""
+            # Finished games may already have set current_minute to FT; otherwise NO GAME
+            if not (data.get("current_minute") or "").strip() or data.get("current_minute") == "NO GAME":
+                if data.get("match_period") == "FT" or (data.get("current_minute") or "").endswith("FT"):
+                    pass  # keep FT from finished-game handling above
+                else:
+                    data["current_minute"] = "NO GAME"
+                    data["formatted_minute"] = "NO GAME"
+                    data["match_period"] = data.get("match_period") or ""
+            if not data.get("formatted_minute"):
+                data["formatted_minute"] = data.get("current_minute") or "NO GAME"
 
         # ---- Next fixture (+ Note block when not live) ----
         if nxt:
@@ -1641,6 +1649,8 @@ class OxfordUnitedPlugin(PluginBase):
             ):
                 data[f"match_in_progress_{k}"] = ""
             data["match_in_progress_available"] = "NO"
+            data["match_in_progress_minute"] = "NO GAME"
+            data["current_minute"] = data.get("current_minute") or "NO GAME"
             idle = self._note3("NO GAME", "AT THE MOMENT", "")
             data["match_in_progress_note_row1"] = idle["row1"]
             data["match_in_progress_note_row2"] = idle["row2"]
