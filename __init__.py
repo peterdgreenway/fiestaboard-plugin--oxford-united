@@ -366,15 +366,34 @@ class OxfordUnitedPlugin(PluginBase):
         return d == today or d == today_uk
 
     def _event_minute(self, event: Optional[Dict]) -> str:
+        """Match clock for display. Appends HT at half-time, FT when finished.
+
+        Examples: 67' · 45+' HT · HT · 90+' FT · FT
+        """
         if not event:
             return ""
+        period = self._match_period(event)
         progress = (event.get("strProgress") or "").strip()
-        if progress:
-            return self._format_stoppage_minute(progress)
-        status = (event.get("strStatus") or "").upper()
-        if "HT" in status or "HALF" in status:
+        minute = self._format_stoppage_minute(progress) if progress else ""
+        # Strip bare HT/FT from progress so we don't double-up
+        if minute.upper() in ("HT", "HALF", "FT", "FULLTIME"):
+            minute = ""
+
+        if period == "HT":
+            if minute and minute.upper() not in ("HT",):
+                return f"{minute} HT"[:12]
             return "HT"
-        if "FT" in status or "FINISH" in status:
+        if period == "FT":
+            if minute and minute.upper() not in ("FT",):
+                return f"{minute} FT"[:12]
+            return "FT"
+
+        if minute:
+            return minute
+        status = (event.get("strStatus") or "").upper()
+        if "HT" in status or "HALF TIME" in status or "HALFTIME" in status:
+            return "HT"
+        if "FT" in status or "FINISH" in status or "FULL TIME" in status:
             return "FT"
         return ""
 
@@ -1211,20 +1230,29 @@ class OxfordUnitedPlugin(PluginBase):
                 for g in goals
             ]
 
+        # Finished match: current_minute shows FT (and optional clock)
+        if last and not in_progress:
+            fin_period = self._match_period(last)
+            if fin_period == "FT" or any(
+                x in (last.get("strStatus") or "").lower()
+                for x in ("finish", "ft", "aet", "pen")
+            ):
+                data["current_minute"] = self._event_minute(last) or "FT"
+                data["match_period"] = "FT"
+                data["formatted_minute"] = data["current_minute"][:15]
+
         # ---- Live match extras + score/minute block ----
         if in_progress and last:
             data["live_status"] = (last.get("strStatus") or last.get("strProgress") or "LIVE")[:20]
             period = self._match_period(last)
             data["match_period"] = period
-            raw_prog = (last.get("strProgress") or data.get("current_minute") or "").strip()
-            minute = self._format_stoppage_minute(raw_prog) or data.get("current_minute") or ""
-            data["current_minute"] = minute
+            # Single source: appends HT / FT when appropriate
+            minute = self._event_minute(last) or data.get("current_minute") or ""
+            data["current_minute"] = minute[:15]
             if period == "HT":
-                data["formatted_minute"] = "HT"[:15]
-                minute = "HT"
+                data["formatted_minute"] = minute[:15] if minute else "HT"
             elif period == "FT":
-                data["formatted_minute"] = "FT"[:15]
-                minute = minute or "FT"
+                data["formatted_minute"] = minute[:15] if minute else "FT"
             elif minute:
                 data["formatted_minute"] = f"{period} {minute}".strip()[:15]
             else:

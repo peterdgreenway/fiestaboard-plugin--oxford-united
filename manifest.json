@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Oxford United League One: smarter live detection (livescore + lookupevent), current scores/minute/scorers, HT/FT, form tiles.",
   "author": "peterdgreenway",
   "icon": "trophy",
