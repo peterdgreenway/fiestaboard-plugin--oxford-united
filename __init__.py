@@ -101,12 +101,25 @@ class OxfordUnitedPlugin(PluginBase):
 
         try:
             standing = self._fetch_standing(api_key)
-            last = self._fetch_last_result(api_key)
-            nxt = self._fetch_next_fixture(api_key)
-            live = self._find_live_event(api_key, last, nxt)
+            last_list = self._fetch_last_events(api_key)
+            next_list = self._fetch_next_events(api_key)
+            last = self._pick_best_last(last_list)
+            nxt = next_list[0] if next_list else None
 
-            # Prefer live event for scores/scorers/minute
+            # Multi-source live detection + enrich with lookupevent for current scores
+            live = self._resolve_live_event(api_key, last_list, next_list)
+            if live and live.get("idEvent"):
+                enriched = self._lookup_event(api_key, str(live["idEvent"]))
+                if enriched:
+                    live = self._merge_event(live, enriched)
+
             match_event = live or last
+            if match_event and match_event.get("idEvent") and not live:
+                # Still refresh last result details (scores/HT) when not live
+                enriched = self._lookup_event(api_key, str(match_event["idEvent"]))
+                if enriched:
+                    match_event = self._merge_event(match_event, enriched)
+
             timeline: List[Dict] = []
             if match_event and match_event.get("idEvent"):
                 timeline = self._fetch_timeline(api_key, str(match_event["idEvent"]))
@@ -154,18 +167,81 @@ class OxfordUnitedPlugin(PluginBase):
                 return row
         return None
 
-    def _fetch_last_result(self, api_key: str) -> Optional[Dict]:
+    def _fetch_last_events(self, api_key: str) -> List[Dict]:
         data = self._get(api_key, "eventslast.php", {"id": TEAM_ID})
-        results = data.get("results") or []
-        for event in results:
-            if event.get("intHomeScore") is not None and event.get("intAwayScore") is not None:
-                return event
-        return results[0] if results else None
+        return list(data.get("results") or [])
+
+    def _fetch_next_events(self, api_key: str) -> List[Dict]:
+        data = self._get(api_key, "eventsnext.php", {"id": TEAM_ID})
+        return list(data.get("events") or [])
+
+    def _fetch_last_result(self, api_key: str) -> Optional[Dict]:
+        return self._pick_best_last(self._fetch_last_events(api_key))
 
     def _fetch_next_fixture(self, api_key: str) -> Optional[Dict]:
-        data = self._get(api_key, "eventsnext.php", {"id": TEAM_ID})
-        events = data.get("events") or []
-        return events[0] if events else None
+        evs = self._fetch_next_events(api_key)
+        return evs[0] if evs else None
+
+    def _pick_best_last(self, results: List[Dict]) -> Optional[Dict]:
+        """Prefer in-progress, else most recent with scores, else first."""
+        if not results:
+            return None
+        for event in results:
+            if self._status_is_live(event):
+                return event
+        for event in results:
+            if event.get("intHomeScore") not in (None, "") and event.get(
+                "intAwayScore"
+            ) not in (None, ""):
+                return event
+        return results[0]
+
+    def _lookup_event(self, api_key: str, event_id: str) -> Optional[Dict]:
+        """Fresh single-event payload (scores, progress, goal details)."""
+        try:
+            data = self._get(api_key, "lookupevent.php", {"id": event_id})
+            events = data.get("events") or []
+            return events[0] if events else None
+        except Exception as e:
+            logger.warning("lookupevent %s failed: %s", event_id, e)
+            return None
+
+    @staticmethod
+    def _merge_event(base: Dict, fresh: Dict) -> Dict:
+        """Overlay non-empty fields from fresh lookup onto base event."""
+        out = dict(base)
+        for k, v in (fresh or {}).items():
+            if v is None or v == "":
+                continue
+            out[k] = v
+        return out
+
+    def _event_involves_oxford(self, event: Optional[Dict]) -> bool:
+        if not event:
+            return False
+        if str(event.get("idHomeTeam") or "") == TEAM_ID or str(
+            event.get("idAwayTeam") or ""
+        ) == TEAM_ID:
+            return True
+        home = (event.get("strHomeTeam") or "").lower()
+        away = (event.get("strAwayTeam") or "").lower()
+        return "oxford" in home or "oxford" in away
+
+    def _fetch_livescores_for_team(self, api_key: str) -> List[Dict]:
+        """League livescores filtered to Oxford (when TheSportsDB provides them)."""
+        out: List[Dict] = []
+        for league_name in ("English League One", "League One"):
+            try:
+                data = self._get(api_key, "livescore.php", {"l": league_name})
+                events = data.get("events") or data.get("livescore") or []
+                for ev in events:
+                    if self._event_involves_oxford(ev):
+                        out.append(ev)
+                if out:
+                    break
+            except Exception as e:
+                logger.debug("livescore %s: %s", league_name, e)
+        return out
 
     def _fetch_timeline(self, api_key: str, event_id: str) -> List[Dict]:
         """Match timeline (goals, cards, subs). Free tier works."""
@@ -177,36 +253,92 @@ class OxfordUnitedPlugin(PluginBase):
             return []
 
     def _status_is_live(self, event: Optional[Dict]) -> bool:
+        """True when TheSportsDB indicates the match is currently in progress."""
         if not event:
             return False
-        status = (event.get("strStatus") or event.get("strProgress") or "").lower()
-        if any(
-            x in status
-            for x in (
-                "not started",
-                "ns",
-                "finish",
-                "ft",
-                "aet",
-                "pen",
-                "postpon",
-                "cancel",
-                "abandoned",
-            )
-        ):
-            # Finished / not started — unless progress shows a minute
-            if "finish" in status or status in ("ft", "aet", "pen") or "not started" in status:
-                return False
-        if any(
-            x in status
-            for x in ("progress", "1h", "2h", "ht", "half", "live", "1st", "2nd")
-        ):
-            return True
-        # strProgress often "67'" during live
+
+        status_raw = (event.get("strStatus") or "").strip()
         progress = (event.get("strProgress") or "").strip()
-        if progress.endswith("'") or progress.isdigit():
+        status = status_raw.lower()
+        prog_l = progress.lower()
+
+        # Explicit finished / not started
+        finished_tokens = (
+            "match finished",
+            "finished",
+            "full time",
+            "after et",
+            "after pen",
+            "awarded",
+            "postponed",
+            "cancelled",
+            "canceled",
+            "abandoned",
+        )
+        if any(t in status for t in finished_tokens) or status in (
+            "ft",
+            "aet",
+            "pen",
+            "aot",
+        ):
+            return False
+        if progress.upper() in ("FT", "AET", "PEN"):
+            return False
+        if "not started" in status or status in ("ns", "tbd", "sched", "scheduled"):
+            # Kick-off may still show NS while progress is empty
+            if not (progress.endswith("'") or progress.isdigit() or prog_l in ("ht", "half")):
+                return False
+
+        # Live status strings used by TheSportsDB
+        live_tokens = (
+            "in play",
+            "inplay",
+            "in progress",
+            "inprogress",
+            "live",
+            "kick off",
+            "kickoff",
+            "1st half",
+            "2nd half",
+            "first half",
+            "second half",
+            "half time",
+            "halftime",
+            "half-time",
+            "extra time",
+            "penalties",
+        )
+        if any(t in status for t in live_tokens):
             return True
+        if any(t in prog_l for t in ("1h", "2h", "ht", "live", "1st", "2nd")):
+            return True
+        if progress.upper() in ("HT", "1H", "2H", "ET"):
+            return True
+
+        # Minute clock: "67'", "45+2'", "90+3"
+        if progress.endswith("'") or re.match(r"^\d{1,3}(\+\d{1,2})?'?$", progress):
+            return True
+        if progress.isdigit() and 1 <= int(progress) <= 120:
+            return True
+
+        # Scores present while not finished and date is today (UTC/local) — weak live signal
+        # handled in _resolve_live_event with date check instead
+
         return False
+
+    def _event_is_today(self, event: Optional[Dict]) -> bool:
+        if not event:
+            return False
+        d = (event.get("dateEvent") or event.get("strTimestamp") or "")[:10]
+        if not d:
+            return False
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            from zoneinfo import ZoneInfo
+            today_uk = datetime.now(ZoneInfo("Europe/London")).strftime("%Y-%m-%d")
+        except Exception:
+            today_uk = today
+        return d == today or d == today_uk
 
     def _event_minute(self, event: Optional[Dict]) -> str:
         if not event:
@@ -267,10 +399,78 @@ class OxfordUnitedPlugin(PluginBase):
         last: Optional[Dict],
         nxt: Optional[Dict],
     ) -> Optional[Dict]:
-        """Return the in-progress Oxford match if any (from last/next payloads)."""
-        for ev in (last, nxt):
-            if ev and self._status_is_live(ev):
+        """Back-compat: single last/next pair."""
+        return self._resolve_live_event(
+            api_key,
+            [last] if last else [],
+            [nxt] if nxt else [],
+        )
+
+    def _resolve_live_event(
+        self,
+        api_key: str,
+        last_list: List[Dict],
+        next_list: List[Dict],
+    ) -> Optional[Dict]:
+        """Find in-progress Oxford match from last, next, and league livescores."""
+        candidates: List[Dict] = []
+        for ev in list(last_list or []) + list(next_list or []):
+            if ev:
+                candidates.append(ev)
+        try:
+            candidates.extend(self._fetch_livescores_for_team(api_key))
+        except Exception as e:
+            logger.debug("livescore scan: %s", e)
+
+        # Dedupe by idEvent
+        seen = set()
+        unique: List[Dict] = []
+        for ev in candidates:
+            eid = str(ev.get("idEvent") or "")
+            if eid and eid in seen:
+                continue
+            if eid:
+                seen.add(eid)
+            unique.append(ev)
+
+        for ev in unique:
+            if not self._event_involves_oxford(ev):
+                continue
+            if self._status_is_live(ev):
+                logger.info(
+                    "Oxford live match detected: %s vs %s status=%s progress=%s score=%s-%s",
+                    ev.get("strHomeTeam"),
+                    ev.get("strAwayTeam"),
+                    ev.get("strStatus"),
+                    ev.get("strProgress"),
+                    ev.get("intHomeScore"),
+                    ev.get("intAwayScore"),
+                )
                 return ev
+
+        # Secondary: today's fixture with scores already populated and not finished
+        for ev in unique:
+            if not self._event_involves_oxford(ev) or not self._event_is_today(ev):
+                continue
+            status = (ev.get("strStatus") or "").lower()
+            if any(x in status for x in ("finish", "ft", "postpon", "cancel", "not started")):
+                continue
+            if ev.get("intHomeScore") not in (None, "") or ev.get("intAwayScore") not in (
+                None,
+                "",
+            ):
+                # Enrich before accepting
+                if ev.get("idEvent"):
+                    fresh = self._lookup_event(api_key, str(ev["idEvent"]))
+                    if fresh:
+                        ev = self._merge_event(ev, fresh)
+                        if self._status_is_live(ev) or (
+                            (ev.get("strProgress") or "").strip()
+                            and not (ev.get("strStatus") or "").lower().startswith("not")
+                        ):
+                            return ev
+                elif self._status_is_live(ev):
+                    return ev
         return None
 
     @staticmethod
@@ -980,15 +1180,19 @@ class OxfordUnitedPlugin(PluginBase):
                 data["formatted_minute"] = (period or "LIVE")[:15]
                 minute = period or "LIVE"
 
-            score = (data.get("last_score") or data.get("ft_score") or "").strip()
-            # Prefer explicit current score from event if empty
-            if not score:
-                hs = last.get("intHomeScore")
-                as_ = last.get("intAwayScore")
-                if hs is not None and as_ is not None:
-                    score = f"{hs}-{as_}"
-                    data["last_score"] = score
-                    data["ft_score"] = score
+            # Always prefer live event score ints (including 0-0)
+            hs = self._to_int(last.get("intHomeScore"))
+            as_ = self._to_int(last.get("intAwayScore"))
+            if hs is not None and as_ is not None:
+                score = f"{hs}-{as_}"
+                data["last_score"] = score
+                data["ft_score"] = score
+                data["current_score"] = score
+                data["home_score"] = str(hs)
+                data["away_score"] = str(as_)
+            else:
+                score = (data.get("last_score") or data.get("ft_score") or "").strip()
+                data["current_score"] = score
 
             home_ab = data.get("last_home") or self._abbr(last.get("strHomeTeam", ""), 6)
             away_ab = data.get("last_away") or self._abbr(last.get("strAwayTeam", ""), 6)
@@ -1023,6 +1227,9 @@ class OxfordUnitedPlugin(PluginBase):
             data["live_match_block"] = ""
             data["live_score_minute"] = ""
             data["live_summary"] = ""
+            data["current_score"] = ""
+            data["home_score"] = ""
+            data["away_score"] = ""
 
         # ---- Next fixture (+ Note block when not live) ----
         if nxt:

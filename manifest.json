@@ -1,8 +1,8 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.5.1",
-  "description": "Oxford United League One. Auto live-refresh Sat 15:00\u201317:00 & Tue 19:45\u201321:45 UK; scorers, form tiles, next fixture when idle.",
+  "version": "1.6.0",
+  "description": "Oxford United League One: smarter live detection (livescore + lookupevent), current scores/minute/scorers, HT/FT, form tiles.",
   "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
@@ -214,7 +214,10 @@
       "scorer_1_surname_only",
       "scorer_2_surname_only",
       "scorer_3_surname_only",
-      "scorer_4_surname_only"
+      "scorer_4_surname_only",
+      "current_score",
+      "home_score",
+      "away_score"
     ],
     "arrays": {
       "goals": {
