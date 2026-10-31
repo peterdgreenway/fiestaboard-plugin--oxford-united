@@ -103,7 +103,6 @@ class OxfordUnitedPlugin(PluginBase):
             standing = self._fetch_standing(api_key)
             last_list = self._fetch_last_events(api_key)
             next_list = self._fetch_next_events(api_key)
-            last = self._pick_best_last(last_list)
             nxt = next_list[0] if next_list else None
 
             # Multi-source live detection + enrich with lookupevent for current scores
@@ -113,12 +112,21 @@ class OxfordUnitedPlugin(PluginBase):
                 if enriched:
                     live = self._merge_event(live, enriched)
 
-            match_event = live or last
-            if match_event and match_event.get("idEvent") and not live:
-                # Still refresh last result details (scores/HT) when not live
-                enriched = self._lookup_event(api_key, str(match_event["idEvent"]))
-                if enriched:
-                    match_event = self._merge_event(match_event, enriched)
+            # Finished result must not override today's live match (e.g. Stockport vs Barnsley)
+            live_id = str((live or {}).get("idEvent") or "")
+            last = self._pick_finished_last(last_list, exclude_id=live_id)
+
+            if live:
+                match_event = live
+            else:
+                match_event = last
+                if match_event and match_event.get("idEvent"):
+                    enriched = self._lookup_event(api_key, str(match_event["idEvent"]))
+                    if enriched:
+                        match_event = self._merge_event(match_event, enriched)
+                        # Re-check: lookup may reveal it is actually still live
+                        if self._status_is_live(match_event):
+                            live = match_event
 
             timeline: List[Dict] = []
             if match_event and match_event.get("idEvent"):
@@ -183,18 +191,35 @@ class OxfordUnitedPlugin(PluginBase):
         return evs[0] if evs else None
 
     def _pick_best_last(self, results: List[Dict]) -> Optional[Dict]:
-        """Prefer in-progress, else most recent with scores, else first."""
+        """Prefer in-progress, else most recent finished with scores."""
         if not results:
             return None
         for event in results:
             if self._status_is_live(event):
                 return event
+        return self._pick_finished_last(results)
+
+    def _pick_finished_last(
+        self, results: List[Dict], exclude_id: str = ""
+    ) -> Optional[Dict]:
+        """Most recent finished result (exclude live event id so Stockport ≠ Barnsley)."""
+        if not results:
+            return None
+        finished: List[Dict] = []
         for event in results:
+            eid = str(event.get("idEvent") or "")
+            if exclude_id and eid == exclude_id:
+                continue
+            if self._status_is_live(event):
+                continue
+            status = (event.get("strStatus") or "").lower()
+            if any(x in status for x in ("not started", "postpon", "cancel")):
+                continue
             if event.get("intHomeScore") not in (None, "") and event.get(
                 "intAwayScore"
             ) not in (None, ""):
-                return event
-        return results[0]
+                finished.append(event)
+        return finished[0] if finished else None
 
     def _lookup_event(self, api_key: str, event_id: str) -> Optional[Dict]:
         """Fresh single-event payload (scores, progress, goal details)."""
@@ -413,16 +438,17 @@ class OxfordUnitedPlugin(PluginBase):
         next_list: List[Dict],
     ) -> Optional[Dict]:
         """Find in-progress Oxford match from last, next, and league livescores."""
+        # Priority: livescores → today's next/last → other last/next
         candidates: List[Dict] = []
-        for ev in list(last_list or []) + list(next_list or []):
-            if ev:
-                candidates.append(ev)
         try:
             candidates.extend(self._fetch_livescores_for_team(api_key))
         except Exception as e:
             logger.debug("livescore scan: %s", e)
+        for ev in list(next_list or []) + list(last_list or []):
+            if ev:
+                candidates.append(ev)
 
-        # Dedupe by idEvent
+        # Dedupe by idEvent keeping first (higher priority)
         seen = set()
         unique: List[Dict] = []
         for ev in candidates:
@@ -433,7 +459,13 @@ class OxfordUnitedPlugin(PluginBase):
                 seen.add(eid)
             unique.append(ev)
 
-        for ev in unique:
+        # Prefer today's Oxford fixtures first
+        ordered = sorted(
+            unique,
+            key=lambda e: (0 if self._event_is_today(e) else 1, 0 if self._event_involves_oxford(e) else 1),
+        )
+
+        for ev in ordered:
             if not self._event_involves_oxford(ev):
                 continue
             if self._status_is_live(ev):
@@ -449,7 +481,7 @@ class OxfordUnitedPlugin(PluginBase):
                 return ev
 
         # Secondary: today's fixture with scores already populated and not finished
-        for ev in unique:
+        for ev in ordered:
             if not self._event_involves_oxford(ev) or not self._event_is_today(ev):
                 continue
             status = (ev.get("strStatus") or "").lower()
@@ -803,9 +835,11 @@ class OxfordUnitedPlugin(PluginBase):
     # Display helpers
     # ------------------------------------------------------------------
 
-    def _abbr(self, name: str, max_len: int = 8) -> str:
+    def _abbr(self, name: str, max_len: int = 3) -> str:
+        """Always return a 3-character team abbreviation."""
         if not name:
-            return "?"
+            return "???"
+        # Exact then case-insensitive known map
         replacements = {
             "Oxford United": "OXF",
             "Bradford City": "BRA",
@@ -834,14 +868,31 @@ class OxfordUnitedPlugin(PluginBase):
             "Exeter City": "EXE",
             "Bolton Wanderers": "BOL",
             "Bromley": "BRO",
+            "Birmingham City": "BIR",
+            "Wrexham": "WRX",
+            "Charlton Athletic": "CHA",
+            "Cambridge United": "CAM",
+            "Crawley Town": "CRA",
+            "Shrewsbury Town": "SHR",
         }
-        short = replacements.get(name, name)
-        if len(short) > max_len:
-            parts = short.split()
-            if len(parts) > 1:
-                short = "".join(p[0] for p in parts).upper()
-            short = short[:max_len]
-        return short.upper()
+        if name in replacements:
+            return replacements[name]
+        low = name.strip().lower()
+        for k, v in replacements.items():
+            if k.lower() == low or low in k.lower() or k.lower() in low:
+                return v
+        # Fallback: first letters of up to 3 words, or first 3 chars
+        parts = [p for p in re.split(r"[^A-Za-z]+", name) if p]
+        if len(parts) >= 3:
+            short = "".join(p[0] for p in parts[:3]).upper()
+        elif len(parts) == 2:
+            short = (parts[0][:2] + parts[1][0]).upper()
+        elif parts:
+            short = parts[0][:3].upper()
+        else:
+            short = "???"
+        short = (short + "???")[:3]
+        return short
 
     def _format_scorers_line(self, goals: List[Dict], max_items: int = 4) -> str:
         """Scorers: 'Mark H Harris 67\'' (forename initial surname + minute)."""
