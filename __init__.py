@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -212,8 +212,84 @@ class OxfordUnitedPlugin(PluginBase):
         return None
 
     def _fetch_last_events(self, api_key: str) -> List[Dict]:
-        data = self._get(api_key, "eventslast.php", {"id": TEAM_ID})
-        return list(data.get("results") or [])
+        """Collect recent Oxford results from several SportsDB endpoints.
+
+        Free-tier `eventslast.php` often returns a single stale row (e.g. Stockport
+        while Barnsley is already FT on eventsday / searchevents). Merge sources.
+        """
+        by_id: Dict[str, Dict] = {}
+
+        def _add(events: List[Dict]) -> None:
+            for ev in events or []:
+                if not ev or not self._event_involves_oxford(ev):
+                    continue
+                eid = str(ev.get("idEvent") or "")
+                if not eid:
+                    continue
+                # Prefer payload with scores / finished status
+                prev = by_id.get(eid)
+                if prev is None:
+                    by_id[eid] = ev
+                    continue
+                by_id[eid] = self._merge_event(prev, ev)
+
+        try:
+            data = self._get(api_key, "eventslast.php", {"id": TEAM_ID})
+            _add(list(data.get("results") or []))
+        except Exception as e:
+            logger.warning("eventslast failed: %s", e)
+
+        # League past results (may be truncated on free key but still useful)
+        try:
+            data = self._get(api_key, "eventspastleague.php", {"id": LEAGUE_ID})
+            _add(list(data.get("events") or []))
+        except Exception as e:
+            logger.debug("eventspastleague failed: %s", e)
+
+        # Walk back several calendar days (covers weekend matches API lags on eventslast)
+        try:
+            from zoneinfo import ZoneInfo
+            base = datetime.now(ZoneInfo("Europe/London"))
+        except Exception:
+            base = datetime.now(timezone.utc)
+        for days_ago in range(0, 10):
+            try:
+                from datetime import timedelta
+                day = (base - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+                data = self._get(
+                    api_key,
+                    "eventsday.php",
+                    {"d": day, "s": "Soccer", "l": LEAGUE_ID},
+                )
+                _add(list(data.get("events") or []))
+            except Exception as e:
+                logger.debug("eventsday %s: %s", days_ago, e)
+
+        # Direct search for recent known pattern (away/home naming)
+        # Optional — only if we still look sparse
+        if len(by_id) < 3:
+            try:
+                data = self._get(
+                    api_key, "searchevents.php", {"e": "Barnsley vs Oxford United"}
+                )
+                _add(list(data.get("event") or []))
+            except Exception:
+                pass
+
+        events = list(by_id.values())
+        events.sort(key=self._event_sort_key, reverse=True)
+        logger.info(
+            "Oxford last-event pool: %s matches; newest=%s",
+            len(events),
+            (
+                f"{events[0].get('dateEvent')} {events[0].get('strHomeTeam')} "
+                f"{events[0].get('intHomeScore')}-{events[0].get('intAwayScore')} "
+                f"{events[0].get('strAwayTeam')}"
+                if events
+                else "none"
+            ),
+        )
+        return events
 
     def _fetch_next_events(self, api_key: str) -> List[Dict]:
         data = self._get(api_key, "eventsnext.php", {"id": TEAM_ID})
