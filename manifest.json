@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Oxford United: data blocks \u2014 last_game, match_in_progress, next_game, league_summary. 3-letter team codes. Live HT/FT minute.",
   "author": "peterdgreenway",
   "icon": "trophy",

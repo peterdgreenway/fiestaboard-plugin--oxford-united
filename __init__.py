@@ -112,27 +112,53 @@ class OxfordUnitedPlugin(PluginBase):
                 if enriched:
                     live = self._merge_event(live, enriched)
 
-            # Finished result must not override today's live match (e.g. Stockport vs Barnsley)
+            # Finished result must not override today's live match
             live_id = str((live or {}).get("idEvent") or "")
-            last = self._pick_finished_last(last_list, exclude_id=live_id)
+            last_finished = self._pick_finished_last(last_list, exclude_id=live_id)
+
+            # Always re-fetch full event so last opponents/scores stay fresh
+            if last_finished and last_finished.get("idEvent"):
+                enriched_last = self._lookup_event(
+                    api_key, str(last_finished["idEvent"])
+                )
+                if enriched_last:
+                    last_finished = self._merge_event(last_finished, enriched_last)
 
             if live:
                 match_event = live
             else:
-                match_event = last
+                match_event = last_finished
                 if match_event and match_event.get("idEvent"):
-                    enriched = self._lookup_event(api_key, str(match_event["idEvent"]))
-                    if enriched:
-                        match_event = self._merge_event(match_event, enriched)
-                        # Re-check: lookup may reveal it is actually still live
-                        if self._status_is_live(match_event):
-                            live = match_event
+                    # already enriched above when same event
+                    if not last_finished or str(match_event.get("idEvent")) != str(
+                        last_finished.get("idEvent")
+                    ):
+                        enriched = self._lookup_event(
+                            api_key, str(match_event["idEvent"])
+                        )
+                        if enriched:
+                            match_event = self._merge_event(match_event, enriched)
+                    else:
+                        match_event = last_finished
+                    if self._status_is_live(match_event):
+                        live = match_event
+                        last_finished = self._pick_finished_last(
+                            last_list, exclude_id=str(match_event.get("idEvent") or "")
+                        )
 
             timeline: List[Dict] = []
             if match_event and match_event.get("idEvent"):
                 timeline = self._fetch_timeline(api_key, str(match_event["idEvent"]))
 
-            if not standing and not match_event and not nxt:
+            if force:
+                global _SCORER_CACHE
+                _SCORER_CACHE.clear()
+                try:
+                    self.clear_cache()
+                except Exception:
+                    pass
+
+            if not standing and not match_event and not nxt and not last_finished:
                 return PluginResult(
                     available=False,
                     error="No data returned from TheSportsDB",
@@ -147,7 +173,7 @@ class OxfordUnitedPlugin(PluginBase):
                 max_scorers,
                 live_event=live,
                 force_refresh=force,
-                last_finished=last if live else None,
+                last_finished=last_finished,
             )
             return PluginResult(available=True, data=data)
 
@@ -164,7 +190,16 @@ class OxfordUnitedPlugin(PluginBase):
 
     def _get(self, api_key: str, endpoint: str, params: Optional[Dict] = None) -> Dict:
         url = f"{BASE_URL.format(api_key=api_key)}/{endpoint}"
-        resp = requests.get(url, params=params or {}, timeout=15)
+        headers = {
+            "Cache-Control": "no-cache, no-store",
+            "Pragma": "no-cache",
+            "User-Agent": "FiestaBoard-OxfordUnited/1.7",
+        }
+        # Bust intermediate caches on refresh
+        q = dict(params or {})
+        if bool(self.config.get("run_refresh_now", False)):
+            q["_ts"] = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        resp = requests.get(url, params=q, headers=headers, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
@@ -200,27 +235,70 @@ class OxfordUnitedPlugin(PluginBase):
                 return event
         return self._pick_finished_last(results)
 
+    def _event_sort_key(self, event: Optional[Dict]) -> str:
+        """Sort key: date + time, newest first when reversed."""
+        if not event:
+            return ""
+        d = (event.get("dateEvent") or "")[:10]
+        t = (event.get("strTime") or event.get("strTimestamp") or "00:00")[:8]
+        return f"{d}T{t}"
+
     def _pick_finished_last(
         self, results: List[Dict], exclude_id: str = ""
     ) -> Optional[Dict]:
-        """Most recent finished result (exclude live event id so Stockport ≠ Barnsley)."""
+        """Most recent *finished* Oxford result (never the live fixture).
+
+        Sorted by date/time descending so last opponents stay current after each match.
+        """
         if not results:
             return None
         finished: List[Dict] = []
         for event in results:
+            if not event:
+                continue
             eid = str(event.get("idEvent") or "")
-            if exclude_id and eid == exclude_id:
+            if exclude_id and eid and eid == exclude_id:
+                continue
+            if not self._event_involves_oxford(event):
                 continue
             if self._status_is_live(event):
                 continue
             status = (event.get("strStatus") or "").lower()
-            if any(x in status for x in ("not started", "postpon", "cancel")):
+            progress = (event.get("strProgress") or "").strip().upper()
+            if any(x in status for x in ("not started", "postpon", "cancel", "abandoned")):
                 continue
-            if event.get("intHomeScore") not in (None, "") and event.get(
-                "intAwayScore"
-            ) not in (None, ""):
+            if progress in ("",) and "not started" in status:
+                continue
+            # Must have a final (or reported) score
+            hs = event.get("intHomeScore")
+            as_ = event.get("intAwayScore")
+            if hs in (None, "") or as_ in (None, ""):
+                continue
+            # Prefer explicit finished; also accept older dated results with scores
+            is_finished = (
+                any(x in status for x in ("finish", "ft", "aet", "pen", "awarded"))
+                or progress in ("FT", "AET", "PEN")
+                or (
+                    not self._event_is_today(event)
+                    and not self._status_is_live(event)
+                )
+                or (
+                    self._event_is_today(event)
+                    and any(x in status for x in ("finish", "ft"))
+                )
+            )
+            if not is_finished and self._event_is_today(event):
+                # Today's match with score but unclear status: only if not live
+                if self._status_is_live(event):
+                    continue
+                is_finished = True
+            if is_finished:
                 finished.append(event)
-        return finished[0] if finished else None
+
+        if not finished:
+            return None
+        finished.sort(key=self._event_sort_key, reverse=True)
+        return finished[0]
 
     def _lookup_event(self, api_key: str, event_id: str) -> Optional[Dict]:
         """Fresh single-event payload (scores, progress, goal details)."""
@@ -1487,7 +1565,7 @@ class OxfordUnitedPlugin(PluginBase):
         data = self._finalize_data_blocks(
             data,
             in_progress=in_progress,
-            last_finished=last_finished if in_progress else last,
+            last_finished=last_finished or (last if not in_progress else None),
             live_event=live_event,
             nxt=nxt,
             max_scorers=max_scorers,
@@ -1564,7 +1642,7 @@ class OxfordUnitedPlugin(PluginBase):
         data["league_summary_note_row3"] = ls["row3"]
         data["league_summary_note_block"] = ls["block"]
 
-        # ---- last_game (finished only) ----
+        # ---- last_game (finished only; always from last_finished event) ----
         lg_home = lg_away = lg_score = lg_date = lg_result = ""
         if last_finished and not self._status_is_live(last_finished):
             lg_home = self._abbr(last_finished.get("strHomeTeam") or "")
@@ -1574,7 +1652,6 @@ class OxfordUnitedPlugin(PluginBase):
             if hs is not None and as_ is not None:
                 lg_score = f"{hs}-{as_}"
             lg_date = (last_finished.get("dateEvent") or "")[:10]
-            # Result from Oxford view
             is_home = str(last_finished.get("idHomeTeam") or "") == TEAM_ID or (
                 last_finished.get("strHomeTeam") == TEAM_NAME
             )
@@ -1585,13 +1662,16 @@ class OxfordUnitedPlugin(PluginBase):
                     lg_result = "W"
                 else:
                     lg_result = "L"
-            # Prefer already-parsed last_* when match_event was the finished game
+            # Keep legacy last_* in sync with last_game when idle
             if not in_progress:
-                lg_home = data.get("last_home") or lg_home
-                lg_away = data.get("last_away") or lg_away
-                lg_score = data.get("last_score") or lg_score
-                lg_date = data.get("last_date") or lg_date
-                lg_result = data.get("last_result") or lg_result
+                data["last_home"] = lg_home
+                data["last_away"] = lg_away
+                data["last_score"] = lg_score
+                data["last_date"] = lg_date
+                data["last_result"] = lg_result
+                data["formatted_last"] = (
+                    f"{lg_home} {lg_score} {lg_away}".strip()[:22] if lg_score else ""
+                )
 
         data["last_game_home"] = lg_home
         data["last_game_away"] = lg_away
