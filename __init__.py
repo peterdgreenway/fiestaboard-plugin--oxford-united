@@ -325,9 +325,14 @@ class OxfordUnitedPlugin(PluginBase):
             logger.warning("clear_cache: %s", e)
         logger.info("Oxford United: caches cleared (refresh now)")
 
-    def _cache_key(self, endpoint: str, params: Optional[Dict]) -> str:
-        items = sorted((params or {}).items())
+    def _http_cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
+        """Build cache key for an API path + query (params optional)."""
+        items = sorted((params or {}).items(), key=lambda x: str(x[0]))
         return endpoint + "?" + "&".join(f"{k}={v}" for k, v in items)
+
+    # Back-compat alias (params must be optional — host may probe the method)
+    def _cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
+        return self._http_cache_key(endpoint, params)
 
     def _budget_ok(self) -> bool:
         now = time.time()
@@ -378,7 +383,7 @@ class OxfordUnitedPlugin(PluginBase):
     ) -> Dict:
         """GET with response cache, budgets, and HTTP 429 backoff."""
         q = dict(params or {})
-        key = self._cache_key(endpoint, q)
+        key = self._http_cache_key(endpoint, q)
         force = force or bool(self.config.get("run_refresh_now", False))
         ttl = HTTP_CACHE_TTL if ttl is None else ttl
 
