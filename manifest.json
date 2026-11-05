@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Oxford United League One. Rate-limit aware (429 backoff, budgets, HTTP cache), last_game/match_in_progress/next_game/league_summary blocks.",
   "author": "peterdgreenway",
   "icon": "trophy",

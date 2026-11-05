@@ -50,6 +50,19 @@ MINUTE_BUDGET = 8  # max calls per rolling minute
 BACKOFF_429 = 900  # 15 min default suspend on 429
 
 GREEN = "{66}"
+
+
+def _s(val: Any, default: str = "") -> str:
+    """Coerce None/non-str to a safe string for concatenation and slicing."""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val
+    try:
+        return str(val)
+    except Exception:
+        return default
+
 YELLOW = "{65}"
 RED = "{63}"
 
@@ -327,8 +340,10 @@ class OxfordUnitedPlugin(PluginBase):
 
     def _http_cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
         """Build cache key for an API path + query (params optional)."""
+        ep = _s(endpoint)
         items = sorted((params or {}).items(), key=lambda x: str(x[0]))
-        return endpoint + "?" + "&".join(f"{k}={v}" for k, v in items)
+        q = "&".join(f"{_s(k)}={_s(v)}" for k, v in items)
+        return f"{ep}?{q}"
 
     # Back-compat alias (params must be optional — host may probe the method)
     def _cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
@@ -402,7 +417,7 @@ class OxfordUnitedPlugin(PluginBase):
                 or "SportsDB API budget exhausted — slowing down"
             )
 
-        url = f"{BASE_URL.format(api_key=api_key)}/{endpoint}"
+        url = f"{BASE_URL.format(api_key=_s(api_key, '123'))}/{_s(endpoint)}"
         headers = {"User-Agent": "FiestaBoard-OxfordUnited/1.8"}
         try:
             resp = requests.get(url, params=q, headers=headers, timeout=15)
@@ -546,8 +561,8 @@ class OxfordUnitedPlugin(PluginBase):
         """Sort key: date + time, newest first when reversed."""
         if not event:
             return ""
-        d = (event.get("dateEvent") or "")[:10]
-        t = (event.get("strTime") or event.get("strTimestamp") or "00:00")[:8]
+        d = _s(event.get("dateEvent"))[:10]
+        t = _s(event.get("strTime") or event.get("strTimestamp") or "00:00")[:8]
         return f"{d}T{t}"
 
     def _pick_finished_last(
@@ -785,11 +800,11 @@ class OxfordUnitedPlugin(PluginBase):
 
     def _format_stoppage_minute(self, progress: str) -> str:
         """Normalise stoppage e.g. 90+3' / 45+2."""
-        p = (progress or "").strip().replace(" ", "")
+        p = _s(progress).strip().replace(" ", "")
         if not p:
             return ""
         if not p.endswith("'") and re.match(r"^\d+(\+\d+)?$", p):
-            p = p + "'"
+            p = f"{p}'"
         return p[:10]
 
     def _match_period(self, event: Optional[Dict]) -> str:
@@ -1246,6 +1261,7 @@ class OxfordUnitedPlugin(PluginBase):
 
     def _abbr(self, name: str, max_len: int = 3) -> str:
         """Always return a 3-character team abbreviation."""
+        name = _s(name).strip()
         if not name:
             return "???"
         # Exact then case-insensitive known map
@@ -1311,19 +1327,19 @@ class OxfordUnitedPlugin(PluginBase):
         for g in goals[:max_items]:
             name = g.get("player_display") or g.get("player_short") or g.get("player") or "?"
             own = " OG" if g.get("is_own") else ""
-            bits.append(f"{name}{own} {g['minute']}'")
+            bits.append(f"{_s(name)}{own} {_s(g.get('minute'))}'")
         line = "; ".join(bits)
         if len(goals) > max_items:
-            line = line[:40] + "..."
-        return line[:80]
+            line = f"{_s(line)[:40]}..."
+        return _s(line)[:80]
 
     def _format_scorer_rows(self, goals: List[Dict], max_rows: int = 4) -> List[str]:
         """One scorer per row: minute + forename initial surname."""
         rows = []
         for g in goals[:max_rows]:
-            name = g.get("player_display") or g.get("player_short") or "?"
+            name = _s(g.get("player_display") or g.get("player_short") or "?")
             own = " OG" if g.get("is_own") else ""
-            rows.append(f"{g['minute']}' {name}{own}"[:45])
+            rows.append(f"{_s(g.get('minute'))}' {name}{own}"[:45])
         return rows
 
     def _format_scorers_surname_line(self, goals: List[Dict], max_items: int = 4) -> str:
@@ -1337,8 +1353,8 @@ class OxfordUnitedPlugin(PluginBase):
             bits.append(f"{name}{own} {g['minute']}'")
         line = "; ".join(bits)
         if len(goals) > max_items:
-            line = line[:40] + "..."
-        return line[:80]
+            line = f"{_s(line)[:40]}..."
+        return _s(line)[:80]
 
     def _format_scorer_surname_rows(self, goals: List[Dict], max_rows: int = 4) -> List[str]:
         """One row per scorer: minute + surname only."""
@@ -1524,8 +1540,8 @@ class OxfordUnitedPlugin(PluginBase):
 
         # ---- Last result + HT/FT + scorers ----
         if last:
-            home = last.get("strHomeTeam", "")
-            away = last.get("strAwayTeam", "")
+            home = _s(last.get("strHomeTeam"))
+            away = _s(last.get("strAwayTeam"))
             date = last.get("dateEvent", "")
             status = last.get("strStatus") or ""
 
@@ -1638,7 +1654,7 @@ class OxfordUnitedPlugin(PluginBase):
             period = self._match_period(last)
             data["match_period"] = period
             # Single source: appends HT / FT when appropriate
-            minute = self._event_minute(last) or data.get("current_minute") or ""
+            minute = _s(self._event_minute(last) or data.get("current_minute") or "")
             data["current_minute"] = minute[:15]
             if period == "HT":
                 data["formatted_minute"] = minute[:15] if minute else "HT"
@@ -1711,10 +1727,11 @@ class OxfordUnitedPlugin(PluginBase):
 
         # ---- Next fixture (+ Note block when not live) ----
         if nxt:
-            home = nxt.get("strHomeTeam", "")
-            away = nxt.get("strAwayTeam", "")
-            date = nxt.get("dateEvent", "")
-            time_str = (nxt.get("strTime") or "")[:5]
+            # .get(k, "") still returns None when key exists with null from JSON
+            home = _s(nxt.get("strHomeTeam"))
+            away = _s(nxt.get("strAwayTeam"))
+            date = _s(nxt.get("dateEvent"))
+            time_str = _s(nxt.get("strTime"))[:5]
 
             data["next_home"] = self._abbr(home)
             data["next_away"] = self._abbr(away)
@@ -1905,14 +1922,15 @@ class OxfordUnitedPlugin(PluginBase):
         return [line.ljust(22)[:22] for line in lines[:6]]
 
     def _note3(self, r1: str, r2: str, r3: str) -> Dict[str, str]:
-        r1 = (r1 or "")[:22]
-        r2 = (r2 or "")[:15].ljust(15)[:15]
-        r3 = (r3 or "")[:15].ljust(15)[:15]
+        r1 = _s(r1)[:22]
+        r2 = _s(r2)[:15].ljust(15)[:15]
+        r3 = _s(r3)[:15].ljust(15)[:15]
+        row1 = r1[:22] if "{6" in r1 else r1[:15].ljust(15)[:15]
         return {
-            "row1": r1[:15].ljust(15)[:15] if "{6" not in r1 else r1[:22],
+            "row1": row1,
             "row2": r2,
             "row3": r3,
-            "block": f"{r1[:22]}\n{r2}\n{r3}",
+            "block": f"{row1}\n{r2}\n{r3}",
         }
 
     def _finalize_data_blocks(
