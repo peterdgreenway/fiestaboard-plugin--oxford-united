@@ -1,8 +1,8 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.7.3",
-  "description": "Oxford United: data blocks \u2014 last_game, match_in_progress, next_game, league_summary. 3-letter team codes. Live HT/FT minute.",
+  "version": "1.8.1",
+  "description": "Oxford United League One. Rate-limit aware (429 backoff, budgets, HTTP cache), last_game/match_in_progress/next_game/league_summary blocks.",
   "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
@@ -273,7 +273,23 @@
       "next_game_note_row1",
       "next_game_note_row2",
       "next_game_note_row3",
-      "next_game_note_block"
+      "next_game_note_block",
+      "api_usage_percent",
+      "api_usage_status",
+      "api_usage_indicator",
+      "api_usage_indicator_name",
+      "api_calls_today",
+      "api_budget_limit",
+      "api_budget_remaining",
+      "api_next_call_seconds",
+      "api_next_call_countdown",
+      "api_next_call_ready",
+      "api_next_call_at",
+      "api_usage_note_row1",
+      "api_usage_note_row2",
+      "api_usage_note_row3",
+      "api_usage_note_block",
+      "api_usage_line"
     ],
     "arrays": {
       "goals": {

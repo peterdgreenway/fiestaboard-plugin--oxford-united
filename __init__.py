@@ -11,6 +11,7 @@ When no match is in progress, exposes a Note-friendly next-opponent block.
 from __future__ import annotations
 
 import logging
+import time
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -34,9 +35,109 @@ BASE_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}"
 GOAL_TYPES = {"goal", "penalty", "own goal", "penalty goal", "score", "g"}
 
 _SCORER_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+# Rate limit / response cache (TheSportsDB free tier is easily exhausted)
+_HTTP_CACHE: Dict[str, Any] = {}  # key -> {at, data}
+_API_BUDGET: Dict[str, Any] = {"minute_key": "", "minute_count": 0, "day_key": "", "day_count": 0}
+_RATE_LIMIT: Dict[str, Any] = {"suspended_until": 0.0, "message": ""}
+_LAST_GOOD: Dict[str, Any] = {"data": None, "at": 0.0}
+_LAST_NETWORK_AT: float = 0.0
+HTTP_CACHE_TTL = 120  # seconds for identical GETs within a poll window
+HTTP_CACHE_TTL_TABLE = 900  # standings change slowly
+HTTP_CACHE_TTL_LAST = 180  # last results
+MIN_POLL_GAP = 90  # soft minimum between full network refreshes unless force
+DAILY_BUDGET = 80  # soft daily cap (free key is tight)
+MINUTE_BUDGET = 8  # max calls per rolling minute
+BACKOFF_429 = 900  # 15 min default suspend on 429
+
 GREEN = "{66}"
 YELLOW = "{65}"
 RED = "{63}"
+
+
+
+def _fmt_countdown(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds >= 3600:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{h}h{m:02d}m"
+    if seconds >= 60:
+        m, s = divmod(seconds, 60)
+        return f"{m}m{s:02d}s"
+    return f"{seconds}s"
+
+
+def build_oxford_api_dashboard() -> Dict[str, str]:
+    """API usage % and countdown to next allowed network call."""
+    global _LAST_NETWORK_AT
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    if _API_BUDGET.get("day_key") != day:
+        calls = 0
+    else:
+        calls = int(_API_BUDGET.get("day_count") or 0)
+    limit = max(1, DAILY_BUDGET)
+    remaining = max(0, limit - calls)
+    pct = min(100, int(round(100.0 * calls / limit)))
+
+    suspended_until = float(_RATE_LIMIT.get("suspended_until") or 0)
+    suspended = now < suspended_until
+
+    # Next call: suspension end, or min gap after last network, or next minute if minute-capped
+    candidates = []
+    if suspended:
+        candidates.append(suspended_until)
+    if _LAST_NETWORK_AT:
+        candidates.append(float(_LAST_NETWORK_AT) + MIN_POLL_GAP)
+    minute_count = int(_API_BUDGET.get("minute_count") or 0)
+    if minute_count >= MINUTE_BUDGET:
+        # next UTC minute boundary
+        gm = time.gmtime(now)
+        secs_into = gm.tm_sec
+        candidates.append(now + (60 - secs_into))
+    if not candidates:
+        # ready now (or only cache hits)
+        next_at = now
+    else:
+        next_at = max(candidates)
+
+    wait = max(0, int(next_at - now))
+    countdown = _fmt_countdown(wait)
+    ready = wait <= 0 and not suspended and remaining > 0
+
+    if suspended or pct >= 90:
+        flap, flap_name, status = "{63}", "red", "SUSPENDED" if suspended else "HIGH"
+    elif pct >= 70:
+        flap, flap_name, status = "{65}", "yellow", "HIGH"
+    else:
+        flap, flap_name, status = "{66}", "green", "OK"
+
+    r1 = f"{flap} API {pct}%"
+    while len(r1.replace("{63}", " ").replace("{65}", " ").replace("{66}", " ")) > 15 and "API" in r1:
+        r1 = r1[:-1]
+    r2 = f"{calls}/{limit}".ljust(15)[:15]
+    r3 = (f"NEXT {countdown}" if wait > 0 else ("READY" if ready else f"{remaining} LEFT")).ljust(15)[:15]
+    block = f"{r1}\n{r2}\n{r3}"
+
+    return {
+        "api_usage_percent": str(pct),
+        "api_usage_status": status,
+        "api_usage_indicator": flap,
+        "api_usage_indicator_name": flap_name,
+        "api_calls_today": str(calls),
+        "api_budget_limit": str(limit),
+        "api_budget_remaining": str(remaining),
+        "api_next_call_seconds": str(wait),
+        "api_next_call_countdown": countdown,
+        "api_next_call_ready": "YES" if ready else "NO",
+        "api_next_call_at": time.strftime("%H:%M:%S UTC", time.gmtime(next_at)) if wait > 0 else "now",
+        "rate_limit_suspended": "YES" if suspended else "NO",
+        "api_usage_note_row1": r1[:22],
+        "api_usage_note_row2": r2,
+        "api_usage_note_row3": r3,
+        "api_usage_note_block": block,
+        "api_usage_line": f"API {pct}% {countdown}".strip()[:22],
+    }
 
 
 class OxfordUnitedPlugin(PluginBase):
@@ -98,8 +199,19 @@ class OxfordUnitedPlugin(PluginBase):
         show_form = self.config.get("show_form", True)
         max_scorers = int(self.config.get("max_scorers", 4))
         force = bool(self.config.get("run_refresh_now", False))
+        if force:
+            self._clear_all_caches()
 
         try:
+            # If suspended, prefer last good board data
+            if time.time() < float(_RATE_LIMIT.get("suspended_until") or 0):
+                if _LAST_GOOD.get("data"):
+                    data = dict(_LAST_GOOD["data"])
+                    data["api_warning"] = _RATE_LIMIT.get("message") or "rate limited"
+                    data["data_stale"] = "YES"
+                    data.update(build_oxford_api_dashboard())
+                    return PluginResult(available=True, data=data)
+
             standing = self._fetch_standing(api_key)
             last_list = self._fetch_last_events(api_key)
             next_list = self._fetch_next_events(api_key)
@@ -151,12 +263,7 @@ class OxfordUnitedPlugin(PluginBase):
                 timeline = self._fetch_timeline(api_key, str(match_event["idEvent"]))
 
             if force:
-                global _SCORER_CACHE
-                _SCORER_CACHE.clear()
-                try:
-                    self.clear_cache()
-                except Exception:
-                    pass
+                self._clear_all_caches()
 
             if not standing and not match_event and not nxt and not last_finished:
                 return PluginResult(
@@ -175,36 +282,163 @@ class OxfordUnitedPlugin(PluginBase):
                 force_refresh=force,
                 last_finished=last_finished,
             )
+            data.update(build_oxford_api_dashboard())
+            _LAST_GOOD["data"] = dict(data)
+            _LAST_GOOD["at"] = time.time()
             return PluginResult(available=True, data=data)
 
         except requests.RequestException as e:
             logger.error("Network error fetching Oxford United data: %s", e)
+            if _LAST_GOOD.get("data"):
+                data = dict(_LAST_GOOD["data"])
+                data["api_warning"] = str(e)[:120]
+                data["data_stale"] = "YES"
+                data.update(build_oxford_api_dashboard())
+                return PluginResult(available=True, data=data)
             return PluginResult(available=False, error=f"Network error: {e}")
         except Exception as e:
             logger.exception("Unexpected error in Oxford United plugin")
-            return PluginResult(available=False, error=str(e))
+            err = str(e)
+            if "429" in err or "budget" in err.lower() or "rate limit" in err.lower():
+                self._suspend(BACKOFF_429, err[:200])
+            if _LAST_GOOD.get("data"):
+                data = dict(_LAST_GOOD["data"])
+                data["api_warning"] = err[:120]
+                data["data_stale"] = "YES"
+                data.update(build_oxford_api_dashboard())
+                return PluginResult(available=True, data=data)
+            return PluginResult(available=False, error=err)
 
     # ------------------------------------------------------------------
     # API helpers
     # ------------------------------------------------------------------
 
-    def _get(self, api_key: str, endpoint: str, params: Optional[Dict] = None) -> Dict:
-        url = f"{BASE_URL.format(api_key=api_key)}/{endpoint}"
-        headers = {
-            "Cache-Control": "no-cache, no-store",
-            "Pragma": "no-cache",
-            "User-Agent": "FiestaBoard-OxfordUnited/1.7",
-        }
-        # Bust intermediate caches on refresh
+    def _clear_all_caches(self) -> None:
+        """Clear HTTP, scorer, last-good, and plugin base caches (Refresh now)."""
+        global _SCORER_CACHE, _HTTP_CACHE, _LAST_GOOD
+        _SCORER_CACHE.clear()
+        _HTTP_CACHE.clear()
+        # Keep last-good snapshot for resilience unless explicit full wipe
+        try:
+            self.clear_cache()
+        except Exception as e:
+            logger.warning("clear_cache: %s", e)
+        logger.info("Oxford United: caches cleared (refresh now)")
+
+    def _cache_key(self, endpoint: str, params: Optional[Dict]) -> str:
+        items = sorted((params or {}).items())
+        return endpoint + "?" + "&".join(f"{k}={v}" for k, v in items)
+
+    def _budget_ok(self) -> bool:
+        now = time.time()
+        if now < float(_RATE_LIMIT.get("suspended_until") or 0):
+            return False
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        minute = time.strftime("%Y-%m-%dT%H:%M", time.gmtime())
+        if _API_BUDGET.get("day_key") != day:
+            _API_BUDGET["day_key"] = day
+            _API_BUDGET["day_count"] = 0
+        if _API_BUDGET.get("minute_key") != minute:
+            _API_BUDGET["minute_key"] = minute
+            _API_BUDGET["minute_count"] = 0
+        if int(_API_BUDGET.get("day_count") or 0) >= DAILY_BUDGET:
+            return False
+        if int(_API_BUDGET.get("minute_count") or 0) >= MINUTE_BUDGET:
+            return False
+        return True
+
+    def _budget_consume(self) -> None:
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        minute = time.strftime("%Y-%m-%dT%H:%M", time.gmtime())
+        if _API_BUDGET.get("day_key") != day:
+            _API_BUDGET["day_key"] = day
+            _API_BUDGET["day_count"] = 0
+        if _API_BUDGET.get("minute_key") != minute:
+            _API_BUDGET["minute_key"] = minute
+            _API_BUDGET["minute_count"] = 0
+        _API_BUDGET["day_count"] = int(_API_BUDGET.get("day_count") or 0) + 1
+        _API_BUDGET["minute_count"] = int(_API_BUDGET.get("minute_count") or 0) + 1
+        global _LAST_NETWORK_AT
+        _LAST_NETWORK_AT = time.time()
+
+    def _suspend(self, seconds: int, message: str = "") -> None:
+        wait = max(60, int(seconds))
+        _RATE_LIMIT["suspended_until"] = time.time() + wait
+        _RATE_LIMIT["message"] = (message or "rate limited")[:200]
+        logger.warning("Oxford United API suspended %ss: %s", wait, _RATE_LIMIT["message"])
+
+    def _get(
+        self,
+        api_key: str,
+        endpoint: str,
+        params: Optional[Dict] = None,
+        *,
+        ttl: Optional[int] = None,
+        force: bool = False,
+    ) -> Dict:
+        """GET with response cache, budgets, and HTTP 429 backoff."""
         q = dict(params or {})
-        if bool(self.config.get("run_refresh_now", False)):
-            q["_ts"] = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        resp = requests.get(url, params=q, headers=headers, timeout=15)
+        key = self._cache_key(endpoint, q)
+        force = force or bool(self.config.get("run_refresh_now", False))
+        ttl = HTTP_CACHE_TTL if ttl is None else ttl
+
+        cached = _HTTP_CACHE.get(key)
+        if cached and not force:
+            age = time.time() - float(cached.get("at") or 0)
+            if age < ttl:
+                return cached["data"]
+
+        if not self._budget_ok():
+            if cached:
+                logger.info("Oxford API budget/suspend — serving HTTP cache for %s", endpoint)
+                return cached["data"]
+            raise RuntimeError(
+                _RATE_LIMIT.get("message")
+                or "SportsDB API budget exhausted — slowing down"
+            )
+
+        url = f"{BASE_URL.format(api_key=api_key)}/{endpoint}"
+        headers = {"User-Agent": "FiestaBoard-OxfordUnited/1.8"}
+        try:
+            resp = requests.get(url, params=q, headers=headers, timeout=15)
+        except requests.RequestException as e:
+            if cached:
+                logger.warning("Network error %s — serving cache: %s", endpoint, e)
+                return cached["data"]
+            raise
+
+        if resp.status_code == 429:
+            retry_after = BACKOFF_429
+            if resp.headers.get("Retry-After"):
+                try:
+                    retry_after = int(resp.headers["Retry-After"])
+                except ValueError:
+                    pass
+            self._suspend(retry_after, "HTTP 429 Too Many Requests")
+            if cached:
+                return cached["data"]
+            resp.raise_for_status()
+
+        if resp.status_code >= 500:
+            if cached:
+                logger.warning("HTTP %s on %s — serving cache", resp.status_code, endpoint)
+                return cached["data"]
+            resp.raise_for_status()
+
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        self._budget_consume()
+        _HTTP_CACHE[key] = {"at": time.time(), "data": data}
+        # Soft slowdown as daily budget fills
+        day_count = int(_API_BUDGET.get("day_count") or 0)
+        if day_count >= int(DAILY_BUDGET * 0.7):
+            time.sleep(0.4)
+        elif day_count >= int(DAILY_BUDGET * 0.5):
+            time.sleep(0.15)
+        return data
 
     def _fetch_standing(self, api_key: str) -> Optional[Dict]:
-        data = self._get(api_key, "lookuptable.php", {"l": LEAGUE_ID})
+        data = self._get(api_key, "lookuptable.php", {"l": LEAGUE_ID}, ttl=HTTP_CACHE_TTL_TABLE)
         table = data.get("table") or []
         for row in table:
             if str(row.get("idTeam")) == TEAM_ID or row.get("strTeam") == TEAM_NAME:
@@ -212,10 +446,11 @@ class OxfordUnitedPlugin(PluginBase):
         return None
 
     def _fetch_last_events(self, api_key: str) -> List[Dict]:
-        """Collect recent Oxford results from several SportsDB endpoints.
+        """Recent Oxford results with minimal API calls.
 
-        Free-tier `eventslast.php` often returns a single stale row (e.g. Stockport
-        while Barnsley is already FT on eventsday / searchevents). Merge sources.
+        1) eventslast (1 call)
+        2) If newest finished is older than 3 days OR only 1 row, add eventsday for
+           today + yesterday only (not 10 days).
         """
         by_id: Dict[str, Dict] = {}
 
@@ -226,69 +461,60 @@ class OxfordUnitedPlugin(PluginBase):
                 eid = str(ev.get("idEvent") or "")
                 if not eid:
                     continue
-                # Prefer payload with scores / finished status
                 prev = by_id.get(eid)
-                if prev is None:
-                    by_id[eid] = ev
-                    continue
-                by_id[eid] = self._merge_event(prev, ev)
+                by_id[eid] = ev if prev is None else self._merge_event(prev, ev)
 
         try:
-            data = self._get(api_key, "eventslast.php", {"id": TEAM_ID})
+            data = self._get(
+                api_key, "eventslast.php", {"id": TEAM_ID}, ttl=HTTP_CACHE_TTL_LAST
+            )
             _add(list(data.get("results") or []))
         except Exception as e:
             logger.warning("eventslast failed: %s", e)
 
-        # League past results (may be truncated on free key but still useful)
-        try:
-            data = self._get(api_key, "eventspastleague.php", {"id": LEAGUE_ID})
-            _add(list(data.get("events") or []))
-        except Exception as e:
-            logger.debug("eventspastleague failed: %s", e)
-
-        # Walk back several calendar days (covers weekend matches API lags on eventslast)
-        try:
-            from zoneinfo import ZoneInfo
-            base = datetime.now(ZoneInfo("Europe/London"))
-        except Exception:
-            base = datetime.now(timezone.utc)
-        for days_ago in range(0, 10):
+        need_days = len(by_id) < 2
+        if not need_days and by_id:
+            newest = max(by_id.values(), key=self._event_sort_key)
+            d = (newest.get("dateEvent") or "")[:10]
             try:
-                from datetime import timedelta
-                day = (base - timedelta(days=days_ago)).strftime("%Y-%m-%d")
-                data = self._get(
-                    api_key,
-                    "eventsday.php",
-                    {"d": day, "s": "Soccer", "l": LEAGUE_ID},
-                )
-                _add(list(data.get("events") or []))
-            except Exception as e:
-                logger.debug("eventsday %s: %s", days_ago, e)
-
-        # Direct search for recent known pattern (away/home naming)
-        # Optional — only if we still look sparse
-        if len(by_id) < 3:
-            try:
-                data = self._get(
-                    api_key, "searchevents.php", {"e": "Barnsley vs Oxford United"}
-                )
-                _add(list(data.get("event") or []))
+                from zoneinfo import ZoneInfo
+                today = datetime.now(ZoneInfo("Europe/London")).strftime("%Y-%m-%d")
             except Exception:
-                pass
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if d and d < today:
+                # If last listed result is not today and we're within 3 days of a
+                # weekend, probe today+yesterday only
+                try:
+                    last_d = datetime.strptime(d, "%Y-%m-%d")
+                    now_d = datetime.strptime(today, "%Y-%m-%d")
+                    if (now_d - last_d).days <= 5:
+                        need_days = True
+                except ValueError:
+                    need_days = True
+
+        if need_days and self._budget_ok():
+            try:
+                from zoneinfo import ZoneInfo
+                base = datetime.now(ZoneInfo("Europe/London"))
+            except Exception:
+                base = datetime.now(timezone.utc)
+            for days_ago in (0, 1, 2):  # max 3 day probes
+                if not self._budget_ok():
+                    break
+                try:
+                    day = (base - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+                    data = self._get(
+                        api_key,
+                        "eventsday.php",
+                        {"d": day, "s": "Soccer", "l": LEAGUE_ID},
+                        ttl=HTTP_CACHE_TTL_LAST,
+                    )
+                    _add(list(data.get("events") or []))
+                except Exception as e:
+                    logger.debug("eventsday %s: %s", days_ago, e)
 
         events = list(by_id.values())
         events.sort(key=self._event_sort_key, reverse=True)
-        logger.info(
-            "Oxford last-event pool: %s matches; newest=%s",
-            len(events),
-            (
-                f"{events[0].get('dateEvent')} {events[0].get('strHomeTeam')} "
-                f"{events[0].get('intHomeScore')}-{events[0].get('intAwayScore')} "
-                f"{events[0].get('strAwayTeam')}"
-                if events
-                else "none"
-            ),
-        )
         return events
 
     def _fetch_next_events(self, api_key: str) -> List[Dict]:
@@ -615,7 +841,11 @@ class OxfordUnitedPlugin(PluginBase):
         # Priority: livescores → today's next/last → other last/next
         candidates: List[Dict] = []
         try:
-            candidates.extend(self._fetch_livescores_for_team(api_key))
+            if self._budget_ok() and (
+                self._in_scheduled_refresh_window()
+                or bool(self.config.get("run_refresh_now", False))
+            ):
+                candidates.extend(self._fetch_livescores_for_team(api_key))
         except Exception as e:
             logger.debug("livescore scan: %s", e)
         for ev in list(next_list or []) + list(last_list or []):
