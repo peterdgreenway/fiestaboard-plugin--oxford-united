@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Oxford United League One via Fixture Download (no TheSportsDB). Blocks: last_game, match_in_progress, next_game, league_summary.",
   "author": "peterdgreenway",
   "icon": "trophy",
@@ -289,7 +289,23 @@
       "api_usage_note_row2",
       "api_usage_note_row3",
       "api_usage_note_block",
-      "api_usage_line"
+      "api_usage_line",
+      "formatted_table_5",
+      "formatted_last_5",
+      "formatted_next_5",
+      "formatted_live_5",
+      "live_summary_5",
+      "live_row2_5",
+      "live_match_block_5",
+      "last_game_line_5",
+      "last_game_note_block_5",
+      "last_game_note_row2_5",
+      "match_in_progress_line_5",
+      "match_in_progress_note_block_5",
+      "next_game_line_5",
+      "next_game_note_block_5",
+      "next_game_note_row2_5",
+      "league_summary_line_5"
     ],
     "arrays": {
       "goals": {

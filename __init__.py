@@ -1725,8 +1725,14 @@ class OxfordUnitedPlugin(PluginBase):
             "scorer_4": "",
             # Formatted lines
             "formatted_table": "",
+            "formatted_table_5": "",
             "formatted_last": "",
+            "formatted_last_5": "",
             "formatted_htft": "",
+            "formatted_next_5": "",
+            "formatted_live_5": "",
+            "live_summary_5": "",
+            "last_game_line_5": "",
             "formatted_scorers": "",
             "formatted_scorers_surname": "",
             "scorers_surname": "",
@@ -1763,6 +1769,7 @@ class OxfordUnitedPlugin(PluginBase):
                 pos_ord = f"{pos}" if pos else "?"
             data["position_ordinal"] = pos_ord
             data["formatted_table"] = f"{TEAM_SHORT}  {pos_ord}  {pts}pts".ljust(22)[:22]
+            data["formatted_table_5"] = f"OXFRD {pos_ord} {pts}pts".ljust(22)[:22]
             # Form as coloured tiles: W=green D=yellow L=red
             form_str = data.get("form") or ""
             # form_style overrides form_games + form_show_letters when set
@@ -1847,6 +1854,9 @@ class OxfordUnitedPlugin(PluginBase):
                 h_abbr = self._abbr(home, 6)
                 a_abbr = self._abbr(away, 6)
                 data["formatted_last"] = f"{h_abbr} {ft_h}-{ft_a} {a_abbr}".ljust(22)[:22]
+                data["formatted_last_5"] = (
+                    f"{self._abbr5(home)} {ft_h}-{ft_a} {self._abbr5(away)}"
+                ).ljust(22)[:22]
 
             if ht_h is not None and ht_a is not None:
                 data["ht_home"] = str(ht_h)
@@ -1957,8 +1967,11 @@ class OxfordUnitedPlugin(PluginBase):
 
             home_ab = data.get("last_home") or self._abbr(last.get("strHomeTeam", ""), 6)
             away_ab = data.get("last_away") or self._abbr(last.get("strAwayTeam", ""), 6)
+            home_ab5 = data.get("last_home_5") or self._abbr5(last.get("strHomeTeam"))
+            away_ab5 = data.get("last_away_5") or self._abbr5(last.get("strAwayTeam"))
 
             data["formatted_live"] = f"{score} {minute}".strip()[:22]
+            data["formatted_live_5"] = data["formatted_live"]
 
             # Dedicated live summary block (Note-friendly 15×3)
             # Row1: LIVE           Row2: OXF 1-0 BRA    Row3: 67'
@@ -1966,17 +1979,23 @@ class OxfordUnitedPlugin(PluginBase):
             if score:
                 r2 = f"{home_ab} {score} {away_ab}".strip()
                 r2 = r2[:15].center(15)[:15] if len(r2) < 15 else r2[:15]
+                r2_5 = f"{home_ab5} {score} {away_ab5}".strip()
+                r2_5 = r2_5[:22]
             else:
                 r2 = f"{home_ab} v {away_ab}"[:15].ljust(15)
+                r2_5 = f"{home_ab5} v {away_ab5}"[:22]
             r3 = str(minute)[:15].center(15)[:15]
             data["live_row1"] = r1.ljust(15)[:15]
             data["live_row2"] = r2.ljust(15)[:15]
             data["live_row3"] = r3.ljust(15)[:15]
             data["live_match_block"] = f"{data['live_row1']}\n{data['live_row2']}\n{data['live_row3']}"
+            data["live_row2_5"] = r2_5[:22]
+            data["live_match_block_5"] = f"{data['live_row1']}\n{r2_5[:22]}\n{data['live_row3']}"
             # Single-line summary: "1-0 67'" or "OXF 1-0 BRA 67'"
             line = f"{score} {minute}".strip()
             data["live_score_minute"] = line[:22]
             data["live_summary"] = f"{home_ab} {score} {away_ab} {minute}".strip()[:45]
+            data["live_summary_5"] = f"{home_ab5} {score} {away_ab5} {minute}".strip()[:45]
         else:
             data["live_status"] = ""
             data["formatted_live"] = ""
@@ -2021,12 +2040,14 @@ class OxfordUnitedPlugin(PluginBase):
                 data["next_home_away"] = "HOME"
                 data["next_ha"] = "H"
                 data["formatted_next"] = f"NEXT {TEAM_SHORT} vs {self._abbr(away)}"[:22]
+                data["formatted_next_5"] = f"NEXT OXFRD vs {self._abbr5(away)}"[:22]
             else:
                 data["next_opponent"] = self._abbr(home)
                 data["next_opponent_full"] = home[:40]
                 data["next_home_away"] = "AWAY"
                 data["next_ha"] = "A"
                 data["formatted_next"] = f"NEXT {self._abbr(home)} vs {TEAM_SHORT}"[:22]
+                data["formatted_next_5"] = f"NEXT {self._abbr5(home)} vs OXFRD"[:22]
 
             # Kick-off countdown when next fixture is today (UK-oriented local)
             data["kickoff_in_minutes"] = ""
@@ -2238,6 +2259,7 @@ class OxfordUnitedPlugin(PluginBase):
         data["league_summary_form_tiles"] = data.get("form_tiles") or ""
         data["league_summary_form_tiles_last3"] = data.get("form_tiles_last3") or ""
         data["league_summary_line"] = data.get("formatted_table") or ""
+        data["league_summary_line_5"] = data.get("formatted_table_5") or ""
         ls = self._note3(
             data["league_summary_line"] or f"{TEAM_SHORT} LEAGUE",
             (data.get("form_tiles_last3") or data.get("form_coloured") or data.get("form") or "")[:15],
@@ -2276,6 +2298,17 @@ class OxfordUnitedPlugin(PluginBase):
                 data["formatted_last"] = (
                     f"{lg_home} {lg_score} {lg_away}".strip()[:22] if lg_score else ""
                 )
+                h5 = (
+                    data.get("last_game_home_5")
+                    or self._abbr5(last_finished.get("strHomeTeam") if last_finished else "")
+                )
+                a5 = (
+                    data.get("last_game_away_5")
+                    or self._abbr5(last_finished.get("strAwayTeam") if last_finished else "")
+                )
+                data["formatted_last_5"] = (
+                    f"{h5} {lg_score} {a5}".strip()[:22] if lg_score else ""
+                )
 
         data["last_game_home"] = lg_home
         data["last_game_away"] = lg_away
@@ -2300,14 +2333,36 @@ class OxfordUnitedPlugin(PluginBase):
         data["last_game_result"] = lg_result
         data["last_game_ht_score"] = data.get("ht_score") or "" if not in_progress else ""
         data["last_game_scorers"] = data.get("formatted_scorers") or "" if not in_progress else ""
+        lg_home5 = data.get("last_game_home_5") or (
+            self._abbr5(last_finished.get("strHomeTeam")) if last_finished else ""
+        )
+        lg_away5 = data.get("last_game_away_5") or (
+            self._abbr5(last_finished.get("strAwayTeam")) if last_finished else ""
+        )
+        data["last_game_home_5"] = lg_home5
+        data["last_game_away_5"] = lg_away5
         data["last_game_line"] = (
             f"{lg_home} {lg_score} {lg_away}".strip() if lg_score else f"{lg_home} v {lg_away}".strip()
         )[:22]
+        data["last_game_line_5"] = (
+            f"{lg_home5} {lg_score} {lg_away5}".strip()
+            if lg_score
+            else f"{lg_home5} v {lg_away5}".strip()
+        )[:22]
+        if lg_score and not data.get("formatted_last_5"):
+            data["formatted_last_5"] = data["last_game_line_5"]
         lg_note = self._note3(
             "LAST GAME",
             data["last_game_line"][:15],
             (lg_date or lg_result or "")[:15],
         )
+        lg_note5 = self._note3(
+            "LAST GAME",
+            (data.get("last_game_line_5") or data["last_game_line"])[:15],
+            (lg_date or lg_result or "")[:15],
+        )
+        data["last_game_note_block_5"] = lg_note5["block"]
+        data["last_game_note_row2_5"] = lg_note5["row2"]
         data["last_game_note_row1"] = lg_note["row1"]
         data["last_game_note_row2"] = lg_note["row2"]
         data["last_game_note_row3"] = lg_note["row3"]
@@ -2330,6 +2385,13 @@ class OxfordUnitedPlugin(PluginBase):
             data["match_in_progress_period"] = mip_period
             data["match_in_progress_scorers"] = data.get("formatted_scorers") or ""
             data["match_in_progress_line"] = f"{mip_score} {mip_minute}".strip()[:22]
+            mh5 = data.get("match_in_progress_home_5") or self._abbr5(live_event.get("strHomeTeam"))
+            ma5 = data.get("match_in_progress_away_5") or self._abbr5(live_event.get("strAwayTeam"))
+            data["match_in_progress_line_5"] = f"{mh5} {mip_score} {ma5}".strip()[:22]
+            data["match_in_progress_note_block_5"] = (
+                f"{{66}} LIVE\n{mh5} {mip_score} {ma5}".strip()[:40]
+                + f"\n{(mip_minute or '')[:15]}"
+            )
             data["match_in_progress_available"] = "YES"
             mip_note = self._note3(
                 "{66} LIVE",
@@ -2383,12 +2445,23 @@ class OxfordUnitedPlugin(PluginBase):
         data["next_game_time"] = data.get("next_time") or ""
         data["next_game_home_away"] = data.get("next_home_away") or ""
         data["next_game_line"] = data.get("formatted_next") or ""
+        data["next_game_line_5"] = data.get("formatted_next_5") or ""
         data["next_game_available"] = "YES" if (data["next_game_home"] or data["next_game_opponent"]) else "NO"
         ng = self._note3(
             "NEXT GAME",
             (data["next_game_line"] or f"{data['next_game_home']} v {data['next_game_away']}")[:15],
             f"{data['next_game_date']} {data['next_game_time']}".strip()[:15],
         )
+        ng5 = self._note3(
+            "NEXT GAME",
+            (
+                data.get("next_game_line_5")
+                or f"{data.get('next_game_home_5') or ''} v {data.get('next_game_away_5') or ''}"
+            )[:15],
+            f"{data['next_game_date']} {data['next_game_time']}".strip()[:15],
+        )
+        data["next_game_note_block_5"] = ng5["block"]
+        data["next_game_note_row2_5"] = ng5["row2"]
         data["next_game_note_row1"] = ng["row1"]
         data["next_game_note_row2"] = ng["row2"]
         data["next_game_note_row3"] = ng["row3"]
