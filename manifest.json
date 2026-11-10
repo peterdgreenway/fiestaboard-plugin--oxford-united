@@ -1,8 +1,8 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "1.8.3",
-  "description": "Oxford United League One. Rate-limit aware (429 backoff, budgets, HTTP cache), last_game/match_in_progress/next_game/league_summary blocks.",
+  "version": "2.0.0",
+  "description": "Oxford United League One via Fixture Download (no TheSportsDB). Blocks: last_game, match_in_progress, next_game, league_summary.",
   "author": "peterdgreenway",
   "icon": "trophy",
   "category": "data",
@@ -62,9 +62,9 @@
       },
       "api_key": {
         "type": "string",
-        "title": "TheSportsDB API Key (optional)",
-        "description": "Free key '123' works. Premium key gives higher limits.",
-        "default": "123",
+        "title": "Optional legacy key (unused)",
+        "description": "TheSportsDB is no longer used. Leave blank.",
+        "default": "",
         "ui:widget": "password"
       },
       "show_form": {

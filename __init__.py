@@ -1,11 +1,10 @@
 """Oxford United (English League One) plugin for FiestaBoard.
 
-Fetches standings, live/in-progress match (minute, HT/FT, scorers),
-and next fixture for Oxford United from TheSportsDB.
+Data sources (no TheSportsDB / sportsapi):
+  - Primary: Fixture Download JSON feed (EFL League One season schedule & scores)
+  - Standings & form: computed from finished matches in that feed
 
-When a match is live, refresh_seconds (default 120) controls polling.
-Use run_refresh_now + Save for an immediate update.
-When no match is in progress, exposes a Note-friendly next-opponent block.
+Provides last game, match-in-progress, next game, league summary blocks.
 """
 
 from __future__ import annotations
@@ -23,13 +22,15 @@ from src.plugins.base import PluginBase, PluginResult
 
 logger = logging.getLogger(__name__)
 
-# Fixed IDs for Oxford United / English League One
-TEAM_ID = "134361"
-LEAGUE_ID = "4396"
 TEAM_NAME = "Oxford United"
 TEAM_SHORT = "OXF"
+TEAM_ALIASES = ("oxford united", "oxford utd", "oxford")
 
-BASE_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}"
+# Season feed — no API key (not TheSportsDB)
+FIXTURE_FEED_URLS = (
+    "https://fixturedownload.com/feed/json/efl-league-one-2026",
+    "https://fixturedownload.com/feed/json/efl-league-one-2025",
+)
 
 # Timeline event types that count as goals
 GOAL_TYPES = {"goal", "penalty", "own goal", "penalty goal", "score", "g"}
@@ -204,10 +205,11 @@ class OxfordUnitedPlugin(PluginBase):
             logger.warning("Oxford United: clear_cache failed: %s", e)
 
     def fetch_data(self) -> PluginResult:
+        # api_key kept for config compatibility; SportsDB is no longer used
         api_key = (
             self.config.get("api_key")
             or os.getenv("OXFORD_UNITED_API_KEY")
-            or "123"
+            or ""
         )
         show_form = self.config.get("show_form", True)
         max_scorers = int(self.config.get("max_scorers", 4))
@@ -225,58 +227,17 @@ class OxfordUnitedPlugin(PluginBase):
                     data.update(build_oxford_api_dashboard())
                     return PluginResult(available=True, data=data)
 
-            standing = self._fetch_standing(api_key)
-            last_list = self._fetch_last_events(api_key)
-            next_list = self._fetch_next_events(api_key)
-            nxt = next_list[0] if next_list else None
-
-            # Multi-source live detection + enrich with lookupevent for current scores
-            live = self._resolve_live_event(api_key, last_list, next_list)
-            if live and live.get("idEvent"):
-                enriched = self._lookup_event(api_key, str(live["idEvent"]))
-                if enriched:
-                    live = self._merge_event(live, enriched)
-
-            # Finished result must not override today's live match
-            live_id = str((live or {}).get("idEvent") or "")
-            last_finished = self._pick_finished_last(last_list, exclude_id=live_id)
-
-            # Always re-fetch full event so last opponents/scores stay fresh
-            if last_finished and last_finished.get("idEvent"):
-                enriched_last = self._lookup_event(
-                    api_key, str(last_finished["idEvent"])
-                )
-                if enriched_last:
-                    last_finished = self._merge_event(last_finished, enriched_last)
-
-            if live:
-                match_event = live
-            else:
-                match_event = last_finished
-                if match_event and match_event.get("idEvent"):
-                    # already enriched above when same event
-                    if not last_finished or str(match_event.get("idEvent")) != str(
-                        last_finished.get("idEvent")
-                    ):
-                        enriched = self._lookup_event(
-                            api_key, str(match_event["idEvent"])
-                        )
-                        if enriched:
-                            match_event = self._merge_event(match_event, enriched)
-                    else:
-                        match_event = last_finished
-                    if self._status_is_live(match_event):
-                        live = match_event
-                        last_finished = self._pick_finished_last(
-                            last_list, exclude_id=str(match_event.get("idEvent") or "")
-                        )
-
-            timeline: List[Dict] = []
-            if match_event and match_event.get("idEvent"):
-                timeline = self._fetch_timeline(api_key, str(match_event["idEvent"]))
-
             if force:
                 self._clear_all_caches()
+
+            # --- Non-SportsDB harvest (Fixture Download + computed table) ---
+            bundle = self._harvest_fixture_feed(force=force)
+            standing = bundle.get("standing")
+            last_finished = bundle.get("last_finished")
+            live = bundle.get("live")
+            nxt = bundle.get("next")
+            match_event = live or last_finished
+            timeline: List[Dict] = []  # feed has no per-goal timeline
 
             if not standing and not match_event and not nxt and not last_finished:
                 return PluginResult(
@@ -337,6 +298,217 @@ class OxfordUnitedPlugin(PluginBase):
         except Exception as e:
             logger.warning("clear_cache: %s", e)
         logger.info("Oxford United: caches cleared (refresh now)")
+
+    def _is_oxford_name(self, name: str) -> bool:
+        n = _s(name).strip().lower()
+        return any(a in n for a in TEAM_ALIASES)
+
+    def _match_to_event(self, m: Dict[str, Any]) -> Dict[str, Any]:
+        """Map Fixture Download row to internal event shape (SportsDB-like)."""
+        home = _s(m.get("HomeTeam"))
+        away = _s(m.get("AwayTeam"))
+        hs = m.get("HomeTeamScore")
+        as_ = m.get("AwayTeamScore")
+        date_utc = _s(m.get("DateUtc"))
+        date_part = date_utc[:10] if date_utc else ""
+        time_part = ""
+        if "T" in date_utc.replace(" ", "T"):
+            time_part = date_utc.replace(" ", "T").split("T")[-1][:5]
+        elif len(date_utc) >= 16:
+            time_part = date_utc[11:16]
+        finished = hs is not None and as_ is not None
+        # Live heuristic: same UK calendar day, kickoff passed, not finished
+        status = "Match Finished" if finished else "Not Started"
+        progress = "FT" if finished else ""
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("Europe/London"))
+        except Exception:
+            now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        if not finished and date_part == today and time_part:
+            try:
+                hh, mm = int(time_part[:2]), int(time_part[3:5] or 0)
+                kick_mins = hh * 60 + mm
+                now_mins = now.hour * 60 + now.minute
+                # 0–130 minutes after KO → treat as in progress
+                if 0 <= (now_mins - kick_mins) <= 130:
+                    status = "In Play"
+                    elapsed = max(1, now_mins - kick_mins)
+                    progress = f"{min(elapsed, 90)}'"
+            except ValueError:
+                pass
+        eid = _s(m.get("MatchNumber") or f"{date_part}-{home}-{away}")
+        return {
+            "idEvent": eid,
+            "strHomeTeam": home,
+            "strAwayTeam": away,
+            "intHomeScore": hs if hs is not None else None,
+            "intAwayScore": as_ if as_ is not None else None,
+            "dateEvent": date_part,
+            "strTime": time_part,
+            "strStatus": status,
+            "strProgress": progress,
+            "strHomeGoalDetails": "",
+            "strAwayGoalDetails": "",
+            "idHomeTeam": "OXF" if self._is_oxford_name(home) else home,
+            "idAwayTeam": "OXF" if self._is_oxford_name(away) else away,
+        }
+
+    def _compute_standing_and_form(self, matches: List[Dict]) -> Optional[Dict]:
+        """Build Oxford table row + form from finished league matches."""
+        stats: Dict[str, Dict[str, Any]] = {}
+
+        def team_stats(name: str) -> Dict[str, Any]:
+            if name not in stats:
+                stats[name] = {
+                    "name": name, "played": 0, "won": 0, "drawn": 0, "lost": 0,
+                    "gf": 0, "ga": 0, "pts": 0, "results": [],
+                }
+            return stats[name]
+
+        finished = [
+            m for m in matches
+            if m.get("HomeTeamScore") is not None and m.get("AwayTeamScore") is not None
+        ]
+        finished.sort(key=lambda m: _s(m.get("DateUtc")))
+        for m in finished:
+            home, away = _s(m.get("HomeTeam")), _s(m.get("AwayTeam"))
+            try:
+                hs, as_ = int(m["HomeTeamScore"]), int(m["AwayTeamScore"])
+            except (TypeError, ValueError):
+                continue
+            for team, gf, ga, home_side in (
+                (home, hs, as_, True),
+                (away, as_, hs, False),
+            ):
+                st = team_stats(team)
+                st["played"] += 1
+                st["gf"] += gf
+                st["ga"] += ga
+                if gf > ga:
+                    st["won"] += 1
+                    st["pts"] += 3
+                    st["results"].append("W")
+                elif gf < ga:
+                    st["lost"] += 1
+                    st["results"].append("L")
+                else:
+                    st["drawn"] += 1
+                    st["pts"] += 1
+                    st["results"].append("D")
+
+        if not stats:
+            return None
+        ordered = sorted(
+            stats.values(),
+            key=lambda s: (s["pts"], s["gf"] - s["ga"], s["gf"]),
+            reverse=True,
+        )
+        ox = None
+        rank = 0
+        for i, row in enumerate(ordered, start=1):
+            if self._is_oxford_name(row["name"]):
+                ox = row
+                rank = i
+                break
+        if not ox:
+            return None
+        form = "".join(ox["results"][-5:][::-1])  # most recent first for display
+        # results appended chronological; last 5 chronological then reverse for WR.. 
+        form = "".join(ox["results"][-5:])
+        form = form[::-1]  # newest first like SportsDB strForm
+        return {
+            "intRank": str(rank),
+            "intPoints": str(ox["pts"]),
+            "intPlayed": str(ox["played"]),
+            "intWin": str(ox["won"]),
+            "intDraw": str(ox["drawn"]),
+            "intLoss": str(ox["lost"]),
+            "intGoalsFor": str(ox["gf"]),
+            "intGoalsAgainst": str(ox["ga"]),
+            "intGoalDifference": str(ox["gf"] - ox["ga"]),
+            "strForm": form,
+            "strTeam": TEAM_NAME,
+        }
+
+    def _harvest_fixture_feed(self, force: bool = False) -> Dict[str, Any]:
+        """Load League One feed once; derive standing, last, next, live."""
+        matches: List[Dict] = []
+        last_err = None
+        for url in FIXTURE_FEED_URLS:
+            try:
+                # Reuse HTTP cache layer via raw requests with our budget helper shape
+                cache_key = f"feed:{url}"
+                cached = _HTTP_CACHE.get(cache_key)
+                if cached and not force:
+                    age = time.time() - float(cached.get("at") or 0)
+                    if age < HTTP_CACHE_TTL_LAST:
+                        matches = cached["data"]
+                        break
+                if not self._budget_ok() and cached:
+                    matches = cached["data"]
+                    break
+                headers = {"User-Agent": "FiestaBoard-OxfordUnited/2.0"}
+                resp = requests.get(url, headers=headers, timeout=25)
+                if resp.status_code == 429:
+                    self._suspend(BACKOFF_429, "HTTP 429 from fixture feed")
+                    if cached:
+                        matches = cached["data"]
+                        break
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                matches = resp.json()
+                if not isinstance(matches, list):
+                    matches = []
+                self._budget_consume()
+                _HTTP_CACHE[cache_key] = {"at": time.time(), "data": matches}
+                logger.info("Oxford fixture feed OK (%s matches) from %s", len(matches), url)
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning("fixture feed failed %s: %s", url, e)
+        if not matches and last_err:
+            raise RuntimeError(f"Fixture feed unavailable: {last_err}")
+
+        ox_matches = [
+            m for m in matches
+            if self._is_oxford_name(m.get("HomeTeam")) or self._is_oxford_name(m.get("AwayTeam"))
+        ]
+        standing = self._compute_standing_and_form(matches)
+
+        finished = [
+            m for m in ox_matches
+            if m.get("HomeTeamScore") is not None and m.get("AwayTeamScore") is not None
+        ]
+        finished.sort(key=lambda m: _s(m.get("DateUtc")), reverse=True)
+        scheduled = [
+            m for m in ox_matches
+            if m.get("HomeTeamScore") is None
+        ]
+        scheduled.sort(key=lambda m: _s(m.get("DateUtc")))
+
+        last_finished = self._match_to_event(finished[0]) if finished else None
+        nxt = self._match_to_event(scheduled[0]) if scheduled else None
+
+        live = None
+        for m in ox_matches:
+            ev = self._match_to_event(m)
+            if self._status_is_live(ev):
+                live = ev
+                break
+            # Also: today with scores still null but within live window already set in _match_to_event
+            if (ev.get("strStatus") or "").lower() in ("in play", "inplay", "live"):
+                live = ev
+                break
+
+        return {
+            "standing": standing,
+            "last_finished": last_finished,
+            "next": nxt,
+            "live": live,
+            "data_source": "fixturedownload",
+        }
 
     def _http_cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
         """Build cache key for an API path + query (params optional)."""
@@ -645,13 +817,9 @@ class OxfordUnitedPlugin(PluginBase):
     def _event_involves_oxford(self, event: Optional[Dict]) -> bool:
         if not event:
             return False
-        if str(event.get("idHomeTeam") or "") == TEAM_ID or str(
-            event.get("idAwayTeam") or ""
-        ) == TEAM_ID:
-            return True
-        home = (event.get("strHomeTeam") or "").lower()
-        away = (event.get("strAwayTeam") or "").lower()
-        return "oxford" in home or "oxford" in away
+        return self._is_oxford_name(event.get("strHomeTeam")) or self._is_oxford_name(
+            event.get("strAwayTeam")
+        )
 
     def _fetch_livescores_for_team(self, api_key: str) -> List[Dict]:
         """League livescores filtered to Oxford (when TheSportsDB provides them)."""
@@ -1981,9 +2149,7 @@ class OxfordUnitedPlugin(PluginBase):
             if hs is not None and as_ is not None:
                 lg_score = f"{hs}-{as_}"
             lg_date = (last_finished.get("dateEvent") or "")[:10]
-            is_home = str(last_finished.get("idHomeTeam") or "") == TEAM_ID or (
-                last_finished.get("strHomeTeam") == TEAM_NAME
-            )
+            is_home = self._is_oxford_name(last_finished.get("strHomeTeam"))
             if hs is not None and as_ is not None:
                 if hs == as_:
                     lg_result = "D"
