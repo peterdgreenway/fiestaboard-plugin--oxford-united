@@ -1,7 +1,7 @@
 {
   "id": "oxford_united",
   "name": "Oxford United",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Oxford United League One via Fixture Download (no TheSportsDB). Blocks: last_game, match_in_progress, next_game, league_summary.",
   "author": "peterdgreenway",
   "icon": "trophy",

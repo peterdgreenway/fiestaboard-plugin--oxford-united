@@ -1487,6 +1487,110 @@ class OxfordUnitedPlugin(PluginBase):
         short = (short + "???")[:3]
         return short
 
+    def _abbr5(self, name: str) -> str:
+        """Always return a 5-character team abbreviation (in addition to 3-char _abbr).
+
+        Oxford is always OXFRD. Others use a known map, else consonant-heavy
+        compression of the main club name (e.g. Barnsley → BRNSY / BRNSL).
+        """
+        name = _s(name).strip()
+        if not name:
+            return "?????"
+        low = name.lower()
+        for k, v in {
+            "oxford united": "OXFRD",
+            "oxford": "OXFRD",
+            "barnsley": "BRNSL",
+            "stockport county": "STKPT",
+            "stockport": "STKPT",
+            "reading": "REDNG",
+            "wycombe wanderers": "WYCMB",
+            "wycombe": "WYCMB",
+            "peterborough united": "PTRBO",
+            "peterborough": "PTRBO",
+            "luton town": "LUTON",
+            "luton": "LUTON",
+            "huddersfield town": "HDFLD",
+            "huddersfield": "HDFLD",
+            "bradford city": "BRDFD",
+            "bradford": "BRDFD",
+            "plymouth argyle": "PLYMA",
+            "plymouth": "PLYMA",
+            "leicester city": "LCEST",
+            "leicester": "LCEST",
+            "stevenage": "STVNG",
+            "wigan athletic": "WIGAN",
+            "wigan": "WIGAN",
+            "blackpool": "BLKPL",
+            "burton albion": "BRTON",
+            "burton": "BRTON",
+            "exeter city": "EXETR",
+            "exeter": "EXETR",
+            "lincoln city": "LINCN",
+            "lincoln": "LINCN",
+            "northampton town": "NTHPT",
+            "northampton": "NTHPT",
+            "mansfield town": "MNSFD",
+            "mansfield": "MNSFD",
+            "rotherham united": "RTHRM",
+            "rotherham": "RTHRM",
+            "charlton athletic": "CHLTN",
+            "charlton": "CHLTN",
+            "cambridge united": "CAMBR",
+            "cambridge": "CAMBR",
+            "crawley town": "CRWLY",
+            "crawley": "CRWLY",
+            "shrewsbury town": "SHREW",
+            "shrewsbury": "SHREW",
+            "bolton wanderers": "BOLTN",
+            "bolton": "BOLTN",
+            "birmingham city": "BRMGH",
+            "birmingham": "BRMGH",
+            "wrexham": "WRXHM",
+            "leyton orient": "LYTNO",
+            "port vale": "PVALE",
+            "doncaster rovers": "DONCR",
+            "doncaster": "DONCR",
+            "afc wimbledon": "WIMBL",
+            "wimbledon": "WIMBL",
+            "milton keynes dons": "MKDNS",
+            "mk dons": "MKDNS",
+            "bromley": "BRMLY",
+            "notts county": "NOTSC",
+            "sheffield wednesday": "SHFWD",
+            "sheffield wed": "SHFWD",
+        }.items():
+            if k == low or k in low or low in k:
+                return v[:5].ljust(5)[:5]
+
+        # Intelligent: drop common suffixes, keep consonants + first vowel
+        core = name
+        for suffix in (
+            " united", " city", " town", " athletic", " albion", " rovers",
+            " wanderers", " county", " argyle", " fc", " afc",
+        ):
+            if core.lower().endswith(suffix):
+                core = core[: -len(suffix)]
+                break
+        core = "".join(c for c in core.upper() if c.isalpha())
+        if not core:
+            return "?????"
+        if len(core) <= 5:
+            return core.ljust(5)[:5]
+        # Prefer first letter + consonants (Barnsley → B + RNSLY → BRNSY)
+        first = core[0]
+        rest = core[1:]
+        consonants = "".join(c for c in rest if c not in "AEIOU")
+        vowels = "".join(c for c in rest if c in "AEIOU")
+        body = consonants
+        # If too short, weave vowels back in
+        i = 0
+        while len(first + body) < 5 and i < len(vowels):
+            body += vowels[i]
+            i += 1
+        abbr = (first + body)[:5]
+        return abbr.ljust(5)[:5]
+
     def _format_scorers_line(self, goals: List[Dict], max_items: int = 4) -> str:
         """Scorers: 'Mark H Harris 67\'' (forename initial surname + minute)."""
         if not goals:
@@ -1566,6 +1670,7 @@ class OxfordUnitedPlugin(PluginBase):
 
         data: Dict[str, Any] = {
             "team": TEAM_SHORT,
+            "team_5": "OXFRD",
             "match_in_progress": "YES" if in_progress else "NO",
             "is_live": "YES" if in_progress else "NO",
             "current_minute": self._event_minute(live_event) if in_progress else "NO GAME",
@@ -1715,6 +1820,8 @@ class OxfordUnitedPlugin(PluginBase):
 
             data["last_home"] = self._abbr(home)
             data["last_away"] = self._abbr(away)
+            data["last_home_5"] = self._abbr5(home)
+            data["last_away_5"] = self._abbr5(away)
             data["last_date"] = date
             data["last_status"] = status
 
@@ -1903,6 +2010,8 @@ class OxfordUnitedPlugin(PluginBase):
 
             data["next_home"] = self._abbr(home)
             data["next_away"] = self._abbr(away)
+            data["next_home_5"] = self._abbr5(home)
+            data["next_away_5"] = self._abbr5(away)
             data["next_date"] = date
             data["next_time"] = time_str
 
@@ -2170,6 +2279,22 @@ class OxfordUnitedPlugin(PluginBase):
 
         data["last_game_home"] = lg_home
         data["last_game_away"] = lg_away
+        data["last_game_home_5"] = (
+            self._abbr5(last_finished.get("strHomeTeam"))
+            if last_finished and not self._status_is_live(last_finished)
+            else ""
+        )
+        data["last_game_away_5"] = (
+            self._abbr5(last_finished.get("strAwayTeam"))
+            if last_finished and not self._status_is_live(last_finished)
+            else ""
+        )
+        data["last_game_opponent_5"] = ""
+        if last_finished and not self._status_is_live(last_finished):
+            if self._is_oxford_name(last_finished.get("strHomeTeam")):
+                data["last_game_opponent_5"] = data["last_game_away_5"]
+            else:
+                data["last_game_opponent_5"] = data["last_game_home_5"]
         data["last_game_score"] = lg_score
         data["last_game_date"] = lg_date
         data["last_game_result"] = lg_result
@@ -2198,6 +2323,8 @@ class OxfordUnitedPlugin(PluginBase):
             mip_period = data.get("match_period") or self._match_period(live_event)
             data["match_in_progress_home"] = mip_home
             data["match_in_progress_away"] = mip_away
+            data["match_in_progress_home_5"] = self._abbr5(live_event.get("strHomeTeam"))
+            data["match_in_progress_away_5"] = self._abbr5(live_event.get("strAwayTeam"))
             data["match_in_progress_score"] = mip_score
             data["match_in_progress_minute"] = mip_minute
             data["match_in_progress_period"] = mip_period
@@ -2239,6 +2366,18 @@ class OxfordUnitedPlugin(PluginBase):
         data["next_game_away"] = data.get("next_away") or (
             self._abbr(nxt.get("strAwayTeam") or "") if nxt else ""
         )
+        data["next_game_home_5"] = data.get("next_home_5") or (
+            self._abbr5(nxt.get("strHomeTeam") or "") if nxt else ""
+        )
+        data["next_game_away_5"] = data.get("next_away_5") or (
+            self._abbr5(nxt.get("strAwayTeam") or "") if nxt else ""
+        )
+        data["next_game_opponent_5"] = ""
+        if nxt:
+            if self._is_oxford_name(nxt.get("strHomeTeam")):
+                data["next_game_opponent_5"] = data["next_game_away_5"]
+            else:
+                data["next_game_opponent_5"] = data["next_game_home_5"]
         data["next_game_opponent"] = data.get("next_opponent") or ""
         data["next_game_date"] = data.get("next_date") or ""
         data["next_game_time"] = data.get("next_time") or ""
